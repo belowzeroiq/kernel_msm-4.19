@@ -3,6 +3,8 @@
  * Copyright (C) 2012 Texas Instruments Incorporated - http://www.ti.com/
  */
 
+#include <dt-bindings/net/ti-dp83867.h>
+
 / {
 	cpus {
 		cpu@0 {
@@ -16,45 +18,10 @@
 	};
 
 	chosen {
-		stdout-path = &uart0;
+		stdout-path = &uart3;
 	};
 
-	leds {
-		pinctrl-names = "default";
-		pinctrl-0 = <&user_leds_s0>;
-
-		compatible = "gpio-leds";
-
-		led2 {
-			label = "beaglebone:green:heartbeat";
-			gpios = <&gpio1 21 GPIO_ACTIVE_HIGH>;
-			linux,default-trigger = "heartbeat";
-			default-state = "off";
-		};
-
-		led3 {
-			label = "beaglebone:green:mmc0";
-			gpios = <&gpio1 22 GPIO_ACTIVE_HIGH>;
-			linux,default-trigger = "mmc0";
-			default-state = "off";
-		};
-
-		led4 {
-			label = "beaglebone:green:usr2";
-			gpios = <&gpio1 23 GPIO_ACTIVE_HIGH>;
-			linux,default-trigger = "cpu0";
-			default-state = "off";
-		};
-
-		led5 {
-			label = "beaglebone:green:usr3";
-			gpios = <&gpio1 24 GPIO_ACTIVE_HIGH>;
-			linux,default-trigger = "mmc1";
-			default-state = "off";
-		};
-	};
-
-	vmmcsd_fixed: fixedregulator0 {
+	vmmcsd_fixed: fixedregulator@0 {
 		compatible = "regulator-fixed";
 		regulator-name = "vmmcsd_fixed";
 		regulator-min-microvolt = <3300000>;
@@ -96,6 +63,13 @@
 		>;
 	};
 
+	uart3_pins: pinmux_uart3_pins {
+		pinctrl-single,pins = <
+			0x150 0x21  /* UART3_RXD */
+			0x154 0x01  /* UART3_TXD */
+		>;
+	};
+
 	clkout2_pin: pinmux_clkout2_pin {
 		pinctrl-single,pins = <
 			AM33XX_PADCONF(AM335X_PIN_XDMA_EVENT_INTR1, PIN_OUTPUT_PULLDOWN, MUX_MODE3)	/* xdma_event_intr1.clkout2 */
@@ -105,19 +79,33 @@
 	cpsw_default: cpsw_default {
 		pinctrl-single,pins = <
 			/* Slave 1 */
-			AM33XX_PADCONF(AM335X_PIN_MII1_RX_ER, PIN_INPUT_PULLUP, MUX_MODE0)
-			AM33XX_PADCONF(AM335X_PIN_MII1_TX_EN, PIN_OUTPUT_PULLDOWN, MUX_MODE0)
-			AM33XX_PADCONF(AM335X_PIN_MII1_RX_DV, PIN_INPUT_PULLUP, MUX_MODE0)
-			AM33XX_PADCONF(AM335X_PIN_MII1_TXD3, PIN_OUTPUT_PULLDOWN, MUX_MODE0)
-			AM33XX_PADCONF(AM335X_PIN_MII1_TXD2, PIN_OUTPUT_PULLDOWN, MUX_MODE0)
-			AM33XX_PADCONF(AM335X_PIN_MII1_TXD1, PIN_OUTPUT_PULLDOWN, MUX_MODE0)
-			AM33XX_PADCONF(AM335X_PIN_MII1_TXD0, PIN_OUTPUT_PULLDOWN, MUX_MODE0)
-			AM33XX_PADCONF(AM335X_PIN_MII1_TX_CLK, PIN_INPUT_PULLUP, MUX_MODE0)
-			AM33XX_PADCONF(AM335X_PIN_MII1_RX_CLK, PIN_INPUT_PULLUP, MUX_MODE0)
-			AM33XX_PADCONF(AM335X_PIN_MII1_RXD3, PIN_INPUT_PULLUP, MUX_MODE0)
-			AM33XX_PADCONF(AM335X_PIN_MII1_RXD2, PIN_INPUT_PULLUP, MUX_MODE0)
-			AM33XX_PADCONF(AM335X_PIN_MII1_RXD1, PIN_INPUT_PULLUP, MUX_MODE0)
-			AM33XX_PADCONF(AM335X_PIN_MII1_RXD0, PIN_INPUT_PULLUP, MUX_MODE0)
+			0x104 (PIN_INPUT_PULLUP | MUX_MODE7)	/* mmc0_cmd.gpio2_31 */
+			0x114 (PIN_OUTPUT_PULLDOWN | MUX_MODE2)	/* mii1_txen.rgmii1_tctl */
+			0x118 (PIN_INPUT_PULLUP | MUX_MODE2)	/* mii1_rxdv.rgmii1_rctl */
+			0x11c (PIN_OUTPUT_PULLDOWN | MUX_MODE2)	/* mii1_txd3.rgmii1_td3 */
+			0x120 (PIN_OUTPUT_PULLDOWN | MUX_MODE2)	/* mii1_txd2.rgmii1_td2 */
+			0x124 (PIN_OUTPUT_PULLDOWN | MUX_MODE2)	/* mii1_txd1.rgmii1_td1 */
+			0x128 (PIN_OUTPUT_PULLDOWN | MUX_MODE2)	/* mii1_txd0.rgmii1_td0 */
+			0x12c (PIN_INPUT_PULLUP | MUX_MODE2)	/* mii1_txclk.rgmii1_tclk */
+			0x130 (PIN_INPUT_PULLUP | MUX_MODE2)	/* mii1_rxclk.rgmii1_rclk */
+			0x134 (PIN_INPUT_PULLUP | MUX_MODE2)	/* mii1_rxd3.rgmii1_rd3 */
+			0x138 (PIN_INPUT_PULLUP | MUX_MODE2)	/* mii1_rxd2.rgmii1_rd2 */
+			0x13c (PIN_INPUT_PULLUP | MUX_MODE2)	/* mii1_rxd1.rgmii1_rd1 */
+			0x140 (PIN_INPUT_PULLUP | MUX_MODE2)	/* mii1_rxd0.rgmii1_rd0 */
+
+			/* Slave 2 */
+			0x40 (PIN_OUTPUT_PULLDOWN | MUX_MODE2)	/* gpmc_a0.rgmii2_tctl */
+			0x44 (PIN_INPUT_PULLUP | MUX_MODE2)	/* gpmc_a1.rgmii2_rctl */
+			0x48 (PIN_OUTPUT_PULLDOWN | MUX_MODE2)	/* gpmc_a2.rgmii2_td3 */
+			0x4c (PIN_OUTPUT_PULLDOWN | MUX_MODE2)	/* gpmc_a3.rgmii2_td2 */
+			0x50 (PIN_OUTPUT_PULLDOWN | MUX_MODE2)	/* gpmc_a4.rgmii2_td1 */
+			0x54 (PIN_OUTPUT_PULLDOWN | MUX_MODE2)	/* gpmc_a5.rgmii2_td0 */
+			0x58 (PIN_OUTPUT_PULLDOWN | MUX_MODE2)	/* gpmc_a6.rgmii2_tclk */
+			0x5c (PIN_INPUT_PULLUP | MUX_MODE2)	/* gpmc_a7.rgmii2_rclk */
+			0x60 (PIN_INPUT_PULLUP | MUX_MODE2)	/* gpmc_a8.rgmii2_rd3 */
+			0x64 (PIN_INPUT_PULLUP | MUX_MODE2)	/* gpmc_a9.rgmii2_rd2 */
+			0x68 (PIN_INPUT_PULLUP | MUX_MODE2)	/* gpmc_a10.rgmii2_rd1 */
+			0x6c (PIN_INPUT_PULLUP | MUX_MODE2)	/* gpmc_a11.rgmii2_rd0 */
 		>;
 	};
 
@@ -191,14 +179,11 @@
 	status = "okay";
 };
 
-&usb0 {
-	dr_mode = "peripheral";
-	interrupts-extended = <&intc 18 &tps 0>;
-	interrupt-names = "mc", "vbus";
-};
+&uart3 {
+	pinctrl-names = "default";
+	pinctrl-0 = <&uart3_pins>;
 
-&usb1 {
-	dr_mode = "host";
+	status = "okay";
 };
 
 &i2c0 {
@@ -223,55 +208,6 @@
 		};
 	};
 };
-
-&i2c2 {
-	pinctrl-names = "default";
-	pinctrl-0 = <&i2c2_pins>;
-
-	status = "okay";
-	clock-frequency = <100000>;
-
-	cape_eeprom0: cape_eeprom0@54 {
-		compatible = "atmel,24c256";
-		reg = <0x54>;
-		#address-cells = <1>;
-		#size-cells = <1>;
-		cape0_data: cape_data@0 {
-			reg = <0 0x100>;
-		};
-	};
-
-	cape_eeprom1: cape_eeprom1@55 {
-		compatible = "atmel,24c256";
-		reg = <0x55>;
-		#address-cells = <1>;
-		#size-cells = <1>;
-		cape1_data: cape_data@0 {
-			reg = <0 0x100>;
-		};
-	};
-
-	cape_eeprom2: cape_eeprom2@56 {
-		compatible = "atmel,24c256";
-		reg = <0x56>;
-		#address-cells = <1>;
-		#size-cells = <1>;
-		cape2_data: cape_data@0 {
-			reg = <0 0x100>;
-		};
-	};
-
-	cape_eeprom3: cape_eeprom3@57 {
-		compatible = "atmel,24c256";
-		reg = <0x57>;
-		#address-cells = <1>;
-		#size-cells = <1>;
-		cape3_data: cape_data@0 {
-			reg = <0 0x100>;
-		};
-	};
-};
-
 
 /include/ "tps65217.dtsi"
 
@@ -354,8 +290,15 @@
 };
 
 &cpsw_emac0 {
-	phy-handle = <&ethphy0>;
-	phy-mode = "mii";
+	phy-handle = <&ethernet_phy>;
+	phy_id = <&davinci_mdio>, <1>;
+	phy-mode = "rgmii-id";
+};
+
+&cpsw_emac1 {
+//	phy-handle = <&ethphy0>;
+	phy_id = <&davinci_mdio>, <0>;
+	phy-mode = "rgmii-id";
 };
 
 &mac {
@@ -372,8 +315,13 @@
 	pinctrl-1 = <&davinci_mdio_sleep>;
 	status = "okay";
 
-	ethphy0: ethernet-phy@0 {
+
+
+	ethernet_phy: ethernet-phy@0 {
 		reg = <0>;
+		ti,rx-internal-delay = <DP83867_RGMIIDCTL_2_25_NS>;
+		ti,tx-internal-delay = <DP83867_RGMIIDCTL_2_75_NS>;
+		tx-fifo-depth = <DP83867_PHYCR_FIFO_DEPTH_4_B_NIB>;
 	};
 };
 
@@ -383,17 +331,4 @@
 	pinctrl-names = "default";
 	pinctrl-0 = <&mmc1_pins>;
 	cd-gpios = <&gpio0 6 GPIO_ACTIVE_LOW>;
-};
-
-&aes {
-	status = "okay";
-};
-
-&sham {
-	status = "okay";
-};
-
-&rtc {
-	clocks = <&clk_32768_ck>, <&clk_24mhz_clkctrl AM3_CLK_24MHZ_CLKDIV32K_CLKCTRL 0>;
-	clock-names = "ext-clk", "int-clk";
 };
