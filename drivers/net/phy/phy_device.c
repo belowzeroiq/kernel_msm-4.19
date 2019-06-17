@@ -590,6 +590,8 @@ struct phy_device *phy_device_create(struct mii_bus *bus, int addr, u32 phy_id,
 	if (!dev)
 		return ERR_PTR(-ENOMEM);
 
+printk("%s: PHY_ID = 0x%X\n", __func__, phy_id);
+
 	mdiodev = &dev->mdio;
 	mdiodev->dev.parent = &bus->dev;
 	mdiodev->dev.bus = &mdio_bus_type;
@@ -1052,7 +1054,7 @@ struct phy_device *phy_connect(struct net_device *dev, const char *bus_id,
 	 */
 	d = bus_find_device_by_name(&mdio_bus_type, NULL, bus_id);
 	if (!d) {
-		pr_err("PHY %s not found\n", bus_id);
+		pr_err("%s:PHY %s not found\n", __func__, bus_id);
 		return ERR_PTR(-ENODEV);
 	}
 	phydev = to_phy_device(d);
@@ -1468,7 +1470,7 @@ struct phy_device *phy_attach(struct net_device *dev, const char *bus_id,
 	 */
 	d = bus_find_device_by_name(bus, NULL, bus_id);
 	if (!d) {
-		pr_err("PHY %s not found\n", bus_id);
+		pr_err("%s: PHY %s not found\n", __func__, bus_id);
 		return ERR_PTR(-ENODEV);
 	}
 	phydev = to_phy_device(d);

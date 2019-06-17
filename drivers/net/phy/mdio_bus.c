@@ -573,11 +573,12 @@ int __mdiobus_register(struct mii_bus *bus, struct module *owner)
 			phydev = mdiobus_scan(bus, i);
 			if (IS_ERR(phydev) && (PTR_ERR(phydev) != -ENODEV)) {
 				err = PTR_ERR(phydev);
+printk("%s: We aint got nothing\n", __func__);
 				goto error;
 			}
 		}
 	}
-
+printk("%s: bus id %i\n", __func__, i);
 	mdiobus_setup_mdiodev_from_board_info(bus, mdiobus_create_device);
 
 	bus->state = MDIOBUS_REGISTERED;

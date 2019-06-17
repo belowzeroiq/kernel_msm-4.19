@@ -632,8 +632,8 @@ static void cpsw_slave_open(struct cpsw_slave *slave, struct cpsw_priv *priv)
 				 &cpsw_adjust_link, slave->data->phy_if);
 		if (IS_ERR(phy)) {
 			dev_err(priv->dev,
-				"phy \"%s\" not found on slave %d, err %ld\n",
-				slave->data->phy_id, slave->slave_num,
+				"%s: phy \"%s\" not found on slave %d, err %ld\n",
+				__func__, slave->data->phy_id, slave->slave_num,
 				PTR_ERR(phy));
 			return;
 		}
