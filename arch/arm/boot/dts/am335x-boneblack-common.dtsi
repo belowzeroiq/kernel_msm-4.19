@@ -59,15 +59,30 @@
 
 	mcasp0_pins: mcasp0_pins {
 		pinctrl-single,pins = <
+#if 0
 			AM33XX_PADCONF(AM335X_PIN_MCASP0_AHCLKX, PIN_INPUT_PULLUP, MUX_MODE0) /* mcasp0_ahcklx.mcasp0_ahclkx */
-			AM33XX_PADCONF(AM335X_PIN_MCASP0_AHCLKR, PIN_OUTPUT_PULLDOWN, MUX_MODE2) /* mcasp0_ahclkr.mcasp0_axr2*/
+			AM33XX_PADCONF(AM335X_PIN_MCASP0_AXR0, PIN_OUTPUT_PULLDOWN, MUX_MODE0) /* mcasp0_ahclkr.mcasp0_axr0 spk */
+			/*AM33XX_PADCONF(AM335X_PIN_MCASP0_AXR1, PIN_INPUT_PULLDOWN, MUX_MODE0) /* mcasp0_ahclkr.mcasp0_axr1 MIC*/
+			/*AM33XX_PADCONF(AM335X_PIN_MCASP0_AHCLKR, PIN_OUTPUT_PULLDOWN, MUX_MODE2) mcasp0_ahclkr.mcasp0_axr2*/
+			/*AM33XX_IOPAD(0x998, PIN_OUTPUT_PULLDOWN | MUX_MODE0)*/
 			AM33XX_PADCONF(AM335X_PIN_MCASP0_FSX, PIN_OUTPUT_PULLUP, MUX_MODE0)
 			AM33XX_PADCONF(AM335X_PIN_MCASP0_ACLKX, PIN_OUTPUT_PULLDOWN, MUX_MODE0)
 			AM33XX_PADCONF(AM335X_PIN_GPMC_A11, PIN_OUTPUT_PULLDOWN, MUX_MODE7) /* gpmc_a11.GPIO1_27 */
+			AM33XX_PADCONF(AM335X_PIN_UART1_RXD, PIN_INPUT_PULLUP, MUX_MODE7) /* GPIO1_14 */
+#endif
+			AM33XX_PADCONF(AM335X_PIN_MCASP0_AHCLKX, PIN_INPUT_PULLUP, MUX_MODE0) /* mcasp0_ahcklx.mcasp0_ahclkx */
+			AM33XX_PADCONF(0x9a8, PIN_INPUT_PULLUP, MUX_MODE0)
+			AM33XX_PADCONF(0x998, PIN_OUTPUT_PULLDOWN, MUX_MODE0) /* mcasp0_ahclkr.mcasp0_axr0*/
+			/* AM33XX_PADCONF(AM335X_PIN_MCASP0_AHCLKR, PIN_OUTPUT_PULLDOWN, MUX_MODE2)  mcasp0_ahclkr.mcasp0_axr2*/
+			AM33XX_PADCONF(AM335X_PIN_MCASP0_FSX, PIN_OUTPUT_PULLUP, MUX_MODE0)
+			AM33XX_PADCONF(AM335X_PIN_MCASP0_ACLKX, PIN_OUTPUT_PULLDOWN, MUX_MODE0)
+			AM33XX_PADCONF(AM335X_PIN_GPMC_A11, PIN_OUTPUT_PULLDOWN, MUX_MODE7) /* gpmc_a11.GPIO1_27 */
+			AM33XX_PADCONF(AM335X_PIN_UART1_RXD, PIN_INPUT_PULLUP, MUX_MODE7) /* GPIO1_14 */
+
 		>;
 	};
 };
-
+#if 0
 &lcdc {
 	status = "okay";
 
@@ -80,10 +95,11 @@
 
 	port {
 		lcdc_0: endpoint@0 {
-			remote-endpoint = <&hdmi_0>;
+			/*remote-endpoint = <&hdmi_0>;*/
 		};
 	};
 };
+
 
 &i2c0 {
 	tda19988: tda19988@70 {
@@ -111,6 +127,7 @@
 		};
 	};
 };
+#endif
 
 &rtc {
 	system-power-controller;
@@ -124,7 +141,7 @@
 	op-mode = <0>;	/* MCASP_IIS_MODE */
 	tdm-slots = <2>;
 	serial-dir = <	/* 0: INACTIVE, 1: TX, 2: RX */
-			0 0 1 0
+			1 2 0 0
 		>;
 	tx-num-evt = <32>;
 	rx-num-evt = <32>;
@@ -152,17 +169,34 @@
 	sound {
 		compatible = "simple-audio-card";
 		simple-audio-card,name = "TI BeagleBone Black";
-		simple-audio-card,format = "i2s";
-		simple-audio-card,bitclock-master = <&dailink0_master>;
-		simple-audio-card,frame-master = <&dailink0_master>;
+		#sound-dai-cells = <2>;
 
-		dailink0_master: simple-audio-card,cpu {
-			sound-dai = <&mcasp0>;
-			clocks = <&clk_mcasp0>;
-		};
+		simple-audio-card,dai-link@0 {
+			format = "i2s";
+			bitclock-master = <&sound0_0_master>;
+			frame-master = <&sound0_0_master>;
+			sound0_0_master: cpu {
+				sound-dai = <&mcasp0>;
+				clocks = <&clk_mcasp0>;
+			};
 
-		simple-audio-card,codec {
-			sound-dai = <&tda19988>;
+			codec {
+				sound-dai = <&tas2562>;
+			};
 		};
+/*
+		simple-audio-card,dai-link@1 {
+			format = "i2s";
+			bitclock-master = <&sound0_1_master>;
+			frame-master = <&sound0_1_master>;
+			sound0_1_master: cpu {
+				sound-dai = <&mcasp0>;
+				clocks = <&clk_mcasp0>;
+			};
+
+			codec {
+				sound-dai = <&tlv320adc5140 1>;
+			};
+		};*/
 	};
 };
