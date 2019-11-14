@@ -23,6 +23,7 @@
 
 #include "tlv320adcx140.h"
 
+/* For debug move this structure to the header
 struct adcx140_priv {
 	struct snd_soc_component *component;
 	struct gpio_desc *gpio_reset;
@@ -31,7 +32,7 @@ struct adcx140_priv {
 
 	int micbias_vg;
 };
-
+*/
 static const struct reg_default adcx140_reg_defaults[] = {
 	{ ADCX140_PAGE_SELECT, 0x00 },
 	{ ADCX140_SW_RESET, 0x00 },
@@ -750,6 +751,8 @@ static int adcx140_i2c_probe(struct i2c_client *i2c,
 	}
 	adcx140->dev = &i2c->dev;
 	i2c_set_clientdata(i2c, adcx140);
+
+	tlv320adc5140_init_debug(adcx140);
 
 	return devm_snd_soc_register_component(&i2c->dev,
 					       &soc_codec_driver_adcx140,

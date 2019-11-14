@@ -116,4 +116,16 @@
 #define ADCX140_MIC_BIAS_VAL_AVDD	6
 #define ADCX140_MIC_BIAS_VAL_MSK GENMASK(6, 4)
 
+
+struct adcx140_priv {
+	struct snd_soc_component *component;
+	struct gpio_desc *gpio_reset;
+	struct regmap *regmap;
+	struct device *dev;
+
+	int micbias_vg;
+};
+
+int tlv320adc5140_init_debug(struct adcx140_priv* adc5140);
+
 #endif /* _TLV320ADCX140_ */
