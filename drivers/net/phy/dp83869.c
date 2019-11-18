@@ -249,7 +249,7 @@ static int dp83869_configure_rgmii(struct phy_device *phydev,
 			return ret;
 	}
 
-	return ret;
+	return 0;
 }
 
 static int dp83869_configure_mode(struct phy_device *phydev,
