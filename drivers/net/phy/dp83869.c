@@ -348,7 +348,7 @@ static int dp83869_configure_mode(struct phy_device *phydev,
 		break;
 	default:
 		return -EINVAL;
-	};
+	}
 
 	return 0;
 }
