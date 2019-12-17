@@ -182,6 +182,17 @@
 			AM33XX_PADCONF(AM335X_PIN_GPMC_AD7, PIN_INPUT_PULLUP, MUX_MODE1) /* gpmc_ad7.mmc1_dat7 */
 		>;
 	};
+
+	spi1_pins: pinmux_spi1_pins {
+		pinctrl-single,pins = <
+			AM33XX_PADCONF(AM335X_PIN_MCASP0_ACLKX, PIN_INPUT_PULLUP, MUX_MODE3) /* CS */
+			AM33XX_PADCONF(AM335X_PIN_MCASP0_FSX, PIN_INPUT_PULLUP, MUX_MODE3) /* D0 */
+                        AM33XX_PADCONF(AM335X_PIN_MCASP0_AXR0, PIN_OUTPUT_PULLUP, MUX_MODE3) /* D1 */
+			AM33XX_PADCONF(AM335X_PIN_MCASP0_AHCLKR, PIN_OUTPUT_PULLUP, MUX_MODE3) /* SCLK */
+			AM33XX_PADCONF(AM335X_PIN_GPMC_A0, PIN_OUTPUT_PULLUP, MUX_MODE7)/* GPIO 17*/
+			AM33XX_PADCONF(AM335X_PIN_GPMC_A1, PIN_OUTPUT_PULLUP, MUX_MODE7)/* GPIO 16*/
+		>;
+	};
 };
 
 &uart0 {
@@ -271,7 +282,24 @@
 		};
 	};
 };
+#include <dt-bindings/interrupt-controller/irq.h>
+&spi1 {
+	pinctrl-names = "default";
+	pinctrl-0 = <&spi1_pins>;
+	status = "okay";
 
+	dac8771@0 {
+		compatible = "ti,dac8771";
+		reg = <0>;
+		spi-max-frequency = <2500000>;
+		ti,output-range = <4>;
+		vref-supply = <&ldo4_reg>;
+		interrupts = <16 IRQ_TYPE_EDGE_FALLING>;
+		interrupt-parent = <&gpio1>;
+		loaddacs-gpios = <&gpio1 17 GPIO_ACTIVE_LOW>;
+		/*reset-gpios = <&gpio1 27 GPIO_ACTIVE_LOW>;*/
+	};
+};
 
 /include/ "tps65217.dtsi"
 
