@@ -1,0 +1,89 @@
+# SPDX-License-Identifier: (GPL-2.0 OR BSD-2-Clause)
+# Copyright (C) 2019 Texas Instruments Incorporated
+%YAML 1.2
+---
+$id: "http://devicetree.org/schemas/bindings/iio/dac/ti,dac8771.yaml#"
+$schema: "http://devicetree.org/meta-schemas/core.yaml#"
+
+title: Texas Instruments DAC8771
+
+maintainers:
+  - Dan Murphy <dmurphy@ti.com>
+
+description: |
+  The DAC8771 is a single channel, precision, fully integrated 16-bit digital
+  to analog converter (DAC) with adaptive power management, and is designed to
+  meet the requirements of industrial control applications.
+
+  Specifications can be found at:
+    http://www.ti.com/lit/ds/symlink/dac8771.pdf
+
+properties:
+  compatible:
+    enum:
+      - ti,dac8771
+
+  reg:
+    maxItems: 1
+
+  reset-gpios:
+    description: |
+       GPIO used for hardware reset.
+
+  loaddacs-gpios:
+    description: |
+       GPIO used to shift the data from the SPI FIFO to the processing engine.
+
+  spi-max-frequency:
+    maximum: 25000000
+
+  vref-supply:
+    description: Phandle to the external reference voltage supply.
+
+  ti,output-range:
+    description: Output range of the DAC as defined in the data sheet.
+       0 - Voltage output 0 to +5 V (default)
+       1 - Voltage output 0 to +10 V
+       2 - Voltage output ±5 V
+       3 - Voltage output ±10 V
+       4 - Current output 3.5 mA to 23.5 mA
+       5 - Current output 0 to 20 mA
+       6 - Current output 0 to 24 mA
+       7 - Current output ±24 mA
+       8 - Voltage output 0 to +6 V
+       9 - Voltage output 0 to +12 V
+       10 - Voltage output ±6 V
+       11 - Voltage output ±12 V
+       12 - Current output 4 mA to 20 mA
+    allOf:
+      - $ref: /schemas/types.yaml#/definitions/uint8
+      - enum: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
+
+  interrupts:
+    description: IRQ line for the DAC
+    maxItems: 1
+
+required:
+  - compatible
+  - reg
+  - vref-supply
+
+examples:
+  - |
+    #include <dt-bindings/gpio/gpio.h>
+    spi {
+      #address-cells = <1>;
+      #size-cells = <0>;
+  
+      dac@0 {
+        compatible = "ti,dac8771";
+        reg = <0>;
+        spi-max-frequency = <25000000>;
+        vref-supply = <&ldo3_reg>;
+        ti,output-range = <2>;
+        interrupts = <16>;
+        interrupt-parent = <&gpio1>;
+        loaddacs-gpios = <&gpio1 17 GPIO_ACTIVE_LOW>;
+        reset-gpios = <&gpio1 27 GPIO_ACTIVE_LOW>;
+      };
+    };
