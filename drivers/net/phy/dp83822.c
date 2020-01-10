@@ -114,11 +114,11 @@ static int dp83822_set_wol(struct phy_device *phydev,
 		/* MAC addresses start with byte 5, but stored in mac[0].
 		 * 822 PHYs store bytes 4|5, 2|3, 0|1
 		 */
-		phy_write_mmd(phydev, DP83822_DEVADDR, MII_DP83822_WOL_DA1,
+		phy_write_mmd_indirect(phydev, DP83822_DEVADDR, MII_DP83822_WOL_DA1,
 			      (mac[1] << 8) | mac[0]);
-		phy_write_mmd(phydev, DP83822_DEVADDR, MII_DP83822_WOL_DA2,
+		phy_write_mmd_indirect(phydev, DP83822_DEVADDR, MII_DP83822_WOL_DA2,
 			      (mac[3] << 8) | mac[2]);
-		phy_write_mmd(phydev, DP83822_DEVADDR, MII_DP83822_WOL_DA3,
+		phy_write_mmd_indirect(phydev, DP83822_DEVADDR, MII_DP83822_WOL_DA3,
 			      (mac[5] << 8) | mac[4]);
 
 		value = phy_read_mmd(phydev, DP83822_DEVADDR,
@@ -129,13 +129,13 @@ static int dp83822_set_wol(struct phy_device *phydev,
 			value &= ~DP83822_WOL_MAGIC_EN;
 
 		if (wol->wolopts & WAKE_MAGICSECURE) {
-			phy_write_mmd(phydev, DP83822_DEVADDR,
+			phy_write_mmd_indirect(phydev, DP83822_DEVADDR,
 				      MII_DP83822_RXSOP1,
 				      (wol->sopass[1] << 8) | wol->sopass[0]);
-			phy_write_mmd(phydev, DP83822_DEVADDR,
+			phy_write_mmd_indirect(phydev, DP83822_DEVADDR,
 				      MII_DP83822_RXSOP2,
 				      (wol->sopass[3] << 8) | wol->sopass[2]);
-			phy_write_mmd(phydev, DP83822_DEVADDR,
+			phy_write_mmd_indirect(phydev, DP83822_DEVADDR,
 				      MII_DP83822_RXSOP3,
 				      (wol->sopass[5] << 8) | wol->sopass[4]);
 			value |= DP83822_WOL_SECURE_ON;
@@ -145,13 +145,13 @@ static int dp83822_set_wol(struct phy_device *phydev,
 
 		value |= (DP83822_WOL_EN | DP83822_WOL_INDICATION_SEL |
 			  DP83822_WOL_CLR_INDICATION);
-		phy_write_mmd(phydev, DP83822_DEVADDR, MII_DP83822_WOL_CFG,
+		phy_write_mmd_indirect(phydev, DP83822_DEVADDR, MII_DP83822_WOL_CFG,
 			      value);
 	} else {
 		value = phy_read_mmd(phydev, DP83822_DEVADDR,
 				     MII_DP83822_WOL_CFG);
 		value &= ~DP83822_WOL_EN;
-		phy_write_mmd(phydev, DP83822_DEVADDR, MII_DP83822_WOL_CFG,
+		phy_write_mmd_indirect(phydev, DP83822_DEVADDR, MII_DP83822_WOL_CFG,
 			      value);
 	}
 
@@ -273,8 +273,9 @@ static int dp83822_config_init(struct phy_device *phydev)
 
 	value = DP83822_WOL_MAGIC_EN | DP83822_WOL_SECURE_ON | DP83822_WOL_EN;
 
-	return phy_write_mmd(phydev, DP83822_DEVADDR, MII_DP83822_WOL_CFG,
+	phy_write_mmd_indirect(phydev, DP83822_DEVADDR, MII_DP83822_WOL_CFG,
 	      value);
+	return 0;
 }
 
 static int dp83822_phy_reset(struct phy_device *phydev)
@@ -310,7 +311,7 @@ static int dp83822_resume(struct phy_device *phydev)
 
 	value = phy_read_mmd(phydev, DP83822_DEVADDR, MII_DP83822_WOL_CFG);
 
-	phy_write_mmd(phydev, DP83822_DEVADDR, MII_DP83822_WOL_CFG, value |
+	phy_write_mmd_indirect(phydev, DP83822_DEVADDR, MII_DP83822_WOL_CFG, value |
 		      DP83822_WOL_CLR_INDICATION);
 
 	return 0;
