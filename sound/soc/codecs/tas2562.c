@@ -27,7 +27,7 @@
 			 SNDRV_PCM_FORMAT_S32_LE)
 
 struct tas2562_data {
-	struct snd_soc_component *component;
+	struct snd_soc_codec *codec;
 	struct gpio_desc *sdz_gpio;
 	struct regmap *regmap;
 	struct device *dev;
@@ -36,26 +36,26 @@ struct tas2562_data {
 	int i_sense_slot;
 };
 
-static int tas2562_set_bias_level(struct snd_soc_component *component,
+static int tas2562_set_bias_level(struct snd_soc_codec *codec,
 				 enum snd_soc_bias_level level)
 {
 	struct tas2562_data *tas2562 =
-			snd_soc_component_get_drvdata(component);
+			snd_soc_codec_get_drvdata(codec);
 
 	switch (level) {
 	case SND_SOC_BIAS_ON:
-		snd_soc_component_update_bits(component,
+		regmap_update_bits(tas2562->regmap,
 			TAS2562_PWR_CTRL,
 			TAS2562_MODE_MASK, TAS2562_ACTIVE);
 		break;
 	case SND_SOC_BIAS_STANDBY:
 	case SND_SOC_BIAS_PREPARE:
-		snd_soc_component_update_bits(component,
+		regmap_update_bits(tas2562->regmap,
 			TAS2562_PWR_CTRL,
 			TAS2562_MODE_MASK, TAS2562_MUTE);
 		break;
 	case SND_SOC_BIAS_OFF:
-		snd_soc_component_update_bits(component,
+		regmap_update_bits(tas2562->regmap,
 			TAS2562_PWR_CTRL,
 			TAS2562_MODE_MASK, TAS2562_SHUTDOWN);
 		break;
@@ -137,9 +137,9 @@ static int tas2562_set_samplerate(struct tas2562_data *tas2562, int samplerate)
 		return -EINVAL;
 	}
 
-	snd_soc_component_update_bits(tas2562->component, TAS2562_TDM_CFG0,
+	regmap_update_bits(tas2562->regmap, TAS2562_TDM_CFG0,
 		TAS2562_TDM_CFG0_RAMPRATE_MASK,	ramp_rate);
-	snd_soc_component_update_bits(tas2562->component, TAS2562_TDM_CFG0,
+	regmap_update_bits(tas2562->regmap, TAS2562_TDM_CFG0,
 		TAS2562_TDM_CFG0_SAMPRATE_MASK,	samp_rate);
 
 	return 0;
@@ -155,19 +155,19 @@ static int tas2562_set_dai_tdm_slot(struct snd_soc_dai *dai,
 
 	switch (slot_width) {
 	case 16:
-		ret = snd_soc_component_update_bits(component,
+		ret = regmap_update_bits(tas2562->regmap,
 						    TAS2562_TDM_CFG2,
 						    TAS2562_TDM_CFG2_RXLEN_MASK,
 						    TAS2562_TDM_CFG2_RXLEN_16B);
 		break;
 	case 24:
-		ret = snd_soc_component_update_bits(component,
+		ret = regmap_update_bits(tas2562->regmap,
 						    TAS2562_TDM_CFG2,
 						    TAS2562_TDM_CFG2_RXLEN_MASK,
 						    TAS2562_TDM_CFG2_RXLEN_24B);
 		break;
 	case 32:
-		ret = snd_soc_component_update_bits(component,
+		ret = regmap_update_bits(tas2562->regmap,
 						    TAS2562_TDM_CFG2,
 						    TAS2562_TDM_CFG2_RXLEN_MASK,
 						    TAS2562_TDM_CFG2_RXLEN_32B);
@@ -193,21 +193,21 @@ static int tas2562_set_bitwidth(struct tas2562_data *tas2562, int bitwidth)
 
 	switch (bitwidth) {
 	case SNDRV_PCM_FORMAT_S16_LE:
-		snd_soc_component_update_bits(tas2562->component,
+		regmap_update_bits(tas2562->regmap,
 					      TAS2562_TDM_CFG2,
 					      TAS2562_TDM_CFG2_RXWLEN_MASK,
 					      TAS2562_TDM_CFG2_RXWLEN_16B);
 		tas2562->v_sense_slot = tas2562->i_sense_slot + 2;
 		break;
 	case SNDRV_PCM_FORMAT_S24_LE:
-		snd_soc_component_update_bits(tas2562->component,
+		regmap_update_bits(tas2562->regmap,
 					      TAS2562_TDM_CFG2,
 					      TAS2562_TDM_CFG2_RXWLEN_MASK,
 					      TAS2562_TDM_CFG2_RXWLEN_24B);
 		tas2562->v_sense_slot = tas2562->i_sense_slot + 4;
 		break;
 	case SNDRV_PCM_FORMAT_S32_LE:
-		snd_soc_component_update_bits(tas2562->component,
+		regmap_update_bits(tas2562->regmap,
 					      TAS2562_TDM_CFG2,
 					      TAS2562_TDM_CFG2_RXWLEN_MASK,
 					      TAS2562_TDM_CFG2_RXWLEN_32B);
@@ -218,14 +218,14 @@ static int tas2562_set_bitwidth(struct tas2562_data *tas2562, int bitwidth)
 		dev_info(tas2562->dev, "Not supported params format\n");
 	}
 
-	ret = snd_soc_component_update_bits(tas2562->component,
+	ret = regmap_update_bits(tas2562->regmap,
 		TAS2562_TDM_CFG5,
 		TAS2562_TDM_CFG5_VSNS_EN | TAS2562_TDM_CFG5_VSNS_SLOT_MASK,
 		TAS2562_TDM_CFG5_VSNS_EN | tas2562->v_sense_slot);
 	if (ret < 0)
 		return ret;
 
-	ret = snd_soc_component_update_bits(tas2562->component,
+	ret = regmap_update_bits(tas2562->regmap,
 		TAS2562_TDM_CFG6,
 		TAS2562_TDM_CFG6_ISNS_EN | TAS2562_TDM_CFG6_ISNS_SLOT_MASK,
 		TAS2562_TDM_CFG6_ISNS_EN | tas2562->i_sense_slot);
@@ -239,8 +239,8 @@ static int tas2562_hw_params(struct snd_pcm_substream *substream,
 			     struct snd_pcm_hw_params *params,
 			     struct snd_soc_dai *dai)
 {
-	struct snd_soc_component *component = dai->component;
-	struct tas2562_data *tas2562 = snd_soc_component_get_drvdata(component);
+	struct snd_soc_codec *codec = dai->codec;
+	struct tas2562_data *tas2562 = snd_soc_codec_get_drvdata(codec);
 	int ret;
 
 	ret = tas2562_set_bitwidth(tas2562, params_format(params));
@@ -258,8 +258,8 @@ static int tas2562_hw_params(struct snd_pcm_substream *substream,
 
 static int tas2562_set_dai_fmt(struct snd_soc_dai *dai, unsigned int fmt)
 {
-	struct snd_soc_component *component = dai->component;
-	struct tas2562_data *tas2562 = snd_soc_component_get_drvdata(component);
+	struct snd_soc_codec *codec = dai->codec;
+	struct tas2562_data *tas2562 = snd_soc_codec_get_drvdata(codec);
 	u8 tdm_rx_start_slot = 0, asi_cfg_1 = 0;
 	int ret;
 
@@ -275,7 +275,7 @@ static int tas2562_set_dai_fmt(struct snd_soc_dai *dai, unsigned int fmt)
 		return -EINVAL;
 	}
 
-	ret = snd_soc_component_update_bits(component, TAS2562_TDM_CFG1,
+	ret = regmap_update_bits(tas2562->regmap, TAS2562_TDM_CFG1,
 					    TAS2562_TDM_CFG1_RX_EDGE_MASK,
 					    asi_cfg_1);
 	if (ret < 0) {
@@ -299,7 +299,7 @@ static int tas2562_set_dai_fmt(struct snd_soc_dai *dai, unsigned int fmt)
 		break;
 	}
 
-	ret = snd_soc_component_update_bits(component, TAS2562_TDM_CFG1,
+	ret = regmap_update_bits(tas2562->regmap, TAS2562_TDM_CFG1,
 					    TAS2562_TDM_CFG1_RX_OFFSET_MASK,
 					    tdm_rx_start_slot);
 
@@ -311,24 +311,25 @@ static int tas2562_set_dai_fmt(struct snd_soc_dai *dai, unsigned int fmt)
 
 static int tas2562_mute(struct snd_soc_dai *dai, int mute)
 {
-	struct snd_soc_component *component = dai->component;
+	struct snd_soc_codec *codec = dai->codec;
+	struct tas2562_data *tas2562 = snd_soc_codec_get_drvdata(codec);
 
-	return snd_soc_component_update_bits(component, TAS2562_PWR_CTRL,
+	return regmap_update_bits(tas2562->regmap, TAS2562_PWR_CTRL,
 					     TAS2562_MODE_MASK,
 					     mute ? TAS2562_MUTE : 0);
 }
 
-static int tas2562_codec_probe(struct snd_soc_component *component)
+static int tas2562_codec_probe(struct snd_soc_codec *codec)
 {
-	struct tas2562_data *tas2562 = snd_soc_component_get_drvdata(component);
+	struct tas2562_data *tas2562 = snd_soc_codec_get_drvdata(codec);
 	int ret;
 
-	tas2562->component = component;
+	tas2562->codec = codec;
 
 	if (tas2562->sdz_gpio)
 		gpiod_set_value_cansleep(tas2562->sdz_gpio, 1);
 
-	ret = snd_soc_component_update_bits(component, TAS2562_PWR_CTRL,
+	ret = regmap_update_bits(tas2562->regmap, TAS2562_PWR_CTRL,
 					    TAS2562_MODE_MASK, TAS2562_MUTE);
 	if (ret < 0)
 		return ret;
@@ -337,9 +338,9 @@ static int tas2562_codec_probe(struct snd_soc_component *component)
 }
 
 #ifdef CONFIG_PM
-static int tas2562_suspend(struct snd_soc_component *component)
+static int tas2562_suspend(struct device *dev)
 {
-	struct tas2562_data *tas2562 = snd_soc_component_get_drvdata(component);
+	struct tas2562_data *tas2562 = dev_get_drvdata(dev);
 
 	regcache_cache_only(tas2562->regmap, true);
 	regcache_mark_dirty(tas2562->regmap);
@@ -350,9 +351,9 @@ static int tas2562_suspend(struct snd_soc_component *component)
 	return 0;
 }
 
-static int tas2562_resume(struct snd_soc_component *component)
+static int tas2562_resume(struct device *dev)
 {
-	struct tas2562_data *tas2562 = snd_soc_component_get_drvdata(component);
+	struct tas2562_data *tas2562 = dev_get_drvdata(dev);
 
 	if (tas2562->sdz_gpio)
 		gpiod_set_value_cansleep(tas2562->sdz_gpio, 1);
@@ -436,21 +437,18 @@ static const struct snd_soc_dapm_route tas2562_audio_map[] = {
 	{"VSENSE", "Switch", "VMON"},
 };
 
-static const struct snd_soc_component_driver soc_component_dev_tas2562 = {
-	.probe			= tas2562_codec_probe,
-	.suspend		= tas2562_suspend,
-	.resume			= tas2562_resume,
-	.set_bias_level		= tas2562_set_bias_level,
-	.controls		= tas2562_snd_controls,
-	.num_controls		= ARRAY_SIZE(tas2562_snd_controls),
-	.dapm_widgets		= tas2562_dapm_widgets,
-	.num_dapm_widgets	= ARRAY_SIZE(tas2562_dapm_widgets),
-	.dapm_routes		= tas2562_audio_map,
-	.num_dapm_routes	= ARRAY_SIZE(tas2562_audio_map),
-	.idle_bias_on		= 1,
-	.use_pmdown_time	= 1,
-	.endianness		= 1,
-	.non_legacy_dai_naming	= 1,
+static const struct snd_soc_codec_driver soc_component_dev_tas2562 = {
+	.probe = tas2562_codec_probe,
+	.idle_bias_off = true,
+	.set_bias_level = tas2562_set_bias_level,
+	.component_driver = {
+		.controls		= tas2562_snd_controls,
+		.num_controls		= ARRAY_SIZE(tas2562_snd_controls),
+		.dapm_widgets		= tas2562_dapm_widgets,
+		.num_dapm_widgets	= ARRAY_SIZE(tas2562_dapm_widgets),
+		.dapm_routes		= tas2562_audio_map,
+		.num_dapm_routes	= ARRAY_SIZE(tas2562_audio_map),
+	},
 };
 
 static const struct snd_soc_dai_ops tas2562_speaker_dai_ops = {
@@ -556,11 +554,21 @@ static int tas2562_probe(struct i2c_client *client,
 
 	dev_set_drvdata(&client->dev, data);
 
-	return devm_snd_soc_register_component(dev, &soc_component_dev_tas2562,
-					       tas2562_dai,
-					       ARRAY_SIZE(tas2562_dai));
-
+	return snd_soc_register_codec(&client->dev, &soc_component_dev_tas2562,
+			tas2562_dai, ARRAY_SIZE(tas2562_dai));
 }
+
+static int tas2562_i2c_remove(struct i2c_client *i2c)
+{
+	snd_soc_unregister_codec(&i2c->dev);
+
+	return 0;
+}
+
+static const struct dev_pm_ops tas2562_i2_pm_ops = {
+	SET_SYSTEM_SLEEP_PM_OPS(tas2562_suspend, tas2562_resume)
+};
+
 
 static const struct i2c_device_id tas2562_id[] = {
 	{ "tas2562", 0 },
@@ -578,8 +586,10 @@ static struct i2c_driver tas2562_i2c_driver = {
 	.driver = {
 		.name = "tas2562",
 		.of_match_table = of_match_ptr(tas2562_of_match),
+		.pm = &tas2562_i2_pm_ops,
 	},
 	.probe = tas2562_probe,
+	.remove   = tas2562_i2c_remove,
 	.id_table = tas2562_id,
 };
 
