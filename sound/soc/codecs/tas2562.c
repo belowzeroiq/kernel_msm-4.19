@@ -572,12 +572,14 @@ static const struct dev_pm_ops tas2562_i2_pm_ops = {
 
 static const struct i2c_device_id tas2562_id[] = {
 	{ "tas2562", 0 },
+	{ "tas2040", 1 },
 	{ }
 };
 MODULE_DEVICE_TABLE(i2c, tas2562_id);
 
 static const struct of_device_id tas2562_of_match[] = {
 	{ .compatible = "ti,tas2562", },
+	{ .compatible = "ti,tas2040", },
 	{ },
 };
 MODULE_DEVICE_TABLE(of, tas2562_of_match);
