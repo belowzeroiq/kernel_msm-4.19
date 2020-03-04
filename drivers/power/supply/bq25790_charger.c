@@ -19,52 +19,6 @@
 
 #define BQ25790_NUM_WD_VAL	8
 
-struct bq25790_init_data {
-	u32 ichg;	/* charge current		*/
-	u32 ilim;	/* input current		*/
-	u32 vreg;	/* regulation voltage		*/
-	u32 iterm;	/* termination current		*/
-	u32 iprechg;	/* precharge current		*/
-	u32 vlim;	/* minimum system voltage limit */
-};
-
-struct bq25790_state {
-	bool online;
-	u8 chrg_status;
-	u8 chrg_type;
-	u8 health;
-	u8 chrg_fault;
-	u8 vsys_status;
-	u8 vbus_status;
-	u8 fault_0;
-	u8 fault_1;
-	u32 vbat_adc;
-	u32 vsys_adc;
-	u32 ibat_adc;
-};
-
-struct bq25790_device {
-	struct i2c_client *client;
-	struct device *dev;
-	struct power_supply *charger;
-	struct power_supply *battery;
-	struct mutex lock;
-
-	struct usb_phy *usb2_phy;
-	struct usb_phy *usb3_phy;
-	struct notifier_block usb_nb;
-	struct work_struct usb_work;
-	unsigned long usb_event;
-	struct regmap *regmap;
-
-	char model_name[I2C_NAME_SIZE];
-	int device_id;
-
-	struct bq25790_init_data init_data;
-	struct bq25790_state state;
-	u32 watchdog_timer;
-};
-
 static struct reg_default bq25790_reg_defs[] = {
 	{BQ25790_INPUT_V_LIM, 0x24},
 	{BQ25790_INPUT_I_LIM_MSB, 0x01},
@@ -1087,6 +1041,8 @@ static int bq25790_probe(struct i2c_client *client,
 		dev_err(dev, "Failed to register power supply\n");
 		goto error_out;
 	}
+
+	ret = bq25790_init_debug(bq);
 
 	return ret;
 error_out:

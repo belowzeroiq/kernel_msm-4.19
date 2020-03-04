@@ -5,6 +5,8 @@
 #ifndef _BQ25790_CHARGER_H
 #define _BQ25790_CHARGER_H
 
+#include <linux/i2c.h>
+
 #define BQ25790_MANUFACTURER	"Texas Instruments"
 #define BQ25790_NAME		"bq25790"
 
@@ -144,5 +146,53 @@
 #define BQ25790_WATCHDOG_MASK	GENMASK(2, 0)
 #define BQ25790_WATCHDOG_DIS	0
 #define BQ25790_WATCHDOG_MAX	160000
+
+struct bq25790_init_data {
+	u32 ichg;	/* charge current		*/
+	u32 ilim;	/* input current		*/
+	u32 vreg;	/* regulation voltage		*/
+	u32 iterm;	/* termination current		*/
+	u32 iprechg;	/* precharge current		*/
+	u32 vlim;	/* minimum system voltage limit */
+};
+
+struct bq25790_state {
+	bool online;
+	u8 chrg_status;
+	u8 chrg_type;
+	u8 health;
+	u8 chrg_fault;
+	u8 vsys_status;
+	u8 vbus_status;
+	u8 fault_0;
+	u8 fault_1;
+	u32 vbat_adc;
+	u32 vsys_adc;
+	u32 ibat_adc;
+};
+
+struct bq25790_device {
+	struct i2c_client *client;
+	struct device *dev;
+	struct power_supply *charger;
+	struct power_supply *battery;
+	struct mutex lock;
+
+	struct usb_phy *usb2_phy;
+	struct usb_phy *usb3_phy;
+	struct notifier_block usb_nb;
+	struct work_struct usb_work;
+	unsigned long usb_event;
+	struct regmap *regmap;
+
+	char model_name[I2C_NAME_SIZE];
+	int device_id;
+
+	struct bq25790_init_data init_data;
+	struct bq25790_state state;
+	u32 watchdog_timer;
+};
+
+int bq25790_init_debug(struct bq25790_device *bq);
 
 #endif /* _BQ25790_CHARGER_H */
