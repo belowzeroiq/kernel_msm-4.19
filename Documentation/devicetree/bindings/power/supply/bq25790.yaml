@@ -1,0 +1,88 @@
+# SPDX-License-Identifier: (GPL-2.0 OR BSD-2-Clause)
+# Copyright (C) 2020 Texas Instruments Incorporated
+%YAML 1.2
+---
+$id: "http://devicetree.org/schemas/power/supply/bq25790.yaml#"
+$schema: "http://devicetree.org/meta-schemas/core.yaml#"
+
+title: TI bq25790 Switch Mode Buck-Boost Charger
+
+maintainers:
+  - Dan Murphy <dmurphy@ti.com>
+
+description: |
+  The BQ25790 is a new part.
+
+properties:
+  compatible:
+    enum:
+      - ti,bq25790
+
+  reg:
+    maxItems: 1
+
+  ti,watchdog-timer:
+    description: |
+       Watchdog timer in milli seconds. 0 (default) disables the watchdog.
+    minimum: 0
+    maximum: 160000
+    enum: [ 0, 500, 1000, 2000, 20000, 40000, 80000, 160000]
+
+  constant-charge-current-max-microamp:
+    description: |
+       Maximum charging current in micro amps with a 10000 micro amp step.
+    minimum: 50000
+    maximum: 5000000
+
+  constant-charge-voltage-max-microvolt:
+    description: |
+       Maximum charging voltage in micro volts with a 10000 micro volt step.
+    minimum: 3000000
+    maximum: 18800000
+
+  precharge-current-microamp:
+    description: |
+       Maximum precharge current in micro amps with a 40000 micro amp step.
+    minimum: 40000
+    maximum: 2000000
+
+  termination-current-microamp:
+    description: |
+       Maximum termination current in micro amps with a 40000 micro amp step.
+    minimum: 40000
+    maximum: 1000000
+
+  input-voltage-limit-microvolt:
+    description: |
+       Minimum input voltage limit in micro volts with a 100000 micro volt step.
+    minimum: 3600000
+    maximum: 22000000
+
+  input-current-limit-microamp:
+    description: |
+       Maximum input current limit in micro amps with a 100000 micro amp step.
+    minimum: 100000
+    maximum: 3300000
+
+
+required:
+  - compatible
+  - reg
+
+examples:
+  - |
+    #include <dt-bindings/gpio/gpio.h>
+    #include <dt-bindings/interrupt-controller/irq.h>
+    i2c0 {
+      #address-cells = <1>;
+      #size-cells = <0>;
+      charger@6b {
+          compatible = "ti,bq25790";
+          reg = <0x6b>;
+          #address-cells = <1>;
+          #size-cells = <0>;
+          interrupt-parent = <&gpio1>;
+          interrupts = <16 IRQ_TYPE_EDGE_FALLING>;
+          ti,watchdog-timer = <2000>;
+      };
+    };
