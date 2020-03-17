@@ -189,8 +189,8 @@
 			AM33XX_PADCONF(AM335X_PIN_MCASP0_FSX, PIN_INPUT_PULLUP, MUX_MODE3) /* D0 */
                         AM33XX_PADCONF(AM335X_PIN_MCASP0_AXR0, PIN_OUTPUT_PULLUP, MUX_MODE3) /* D1 */
 			AM33XX_PADCONF(AM335X_PIN_MCASP0_AHCLKR, PIN_OUTPUT_PULLUP, MUX_MODE3) /* SCLK */
-			AM33XX_PADCONF(AM335X_PIN_GPMC_A0, PIN_OUTPUT_PULLUP, MUX_MODE7)/* GPIO 17*/
-			AM33XX_PADCONF(AM335X_PIN_GPMC_A1, PIN_OUTPUT_PULLUP, MUX_MODE7)/* GPIO 16*/
+			AM33XX_PADCONF(AM335X_PIN_GPMC_A0, PIN_INPUT_PULLUP, MUX_MODE7)/* GPIO 16*/
+			AM33XX_PADCONF(AM335X_PIN_GPMC_A1, PIN_OUTPUT_PULLUP, MUX_MODE7)/* GPIO 17*/
 		>;
 	};
 };
@@ -288,16 +288,15 @@
 	pinctrl-0 = <&spi1_pins>;
 	status = "okay";
 
-	dac8771@0 {
-		compatible = "ti,dac8771";
+	ads129x@0 {
+		compatible = "ti,ads1298";
 		reg = <0>;
-		spi-max-frequency = <2500000>;
-		ti,output-range = <4>;
-		vref-supply = <&ldo4_reg>;
-		interrupts = <16 IRQ_TYPE_EDGE_FALLING>;
+		spi-max-frequency = <100000>;
+		spi-cpha;
 		interrupt-parent = <&gpio1>;
-		loaddacs-gpios = <&gpio1 17 GPIO_ACTIVE_LOW>;
+		interrupts = <16 IRQ_TYPE_EDGE_RISING>;
 		/*reset-gpios = <&gpio1 27 GPIO_ACTIVE_LOW>;*/
+		/*powerdown-gpios = <&gpio1 27 GPIO_ACTIVE_LOW>;*/
 	};
 };
 
