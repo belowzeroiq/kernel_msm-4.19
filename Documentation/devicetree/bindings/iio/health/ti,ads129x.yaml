@@ -1,0 +1,67 @@
+# SPDX-License-Identifier: (GPL-2.0 OR BSD-2-Clause)
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/iio/adc/ti,ads129x.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: Texas Instruments ADS1298/R, ADS1296/R and ADS1294/R
+
+maintainers:
+  - Dan Murphy <dmurphy@ti.com>
+
+description: |
+  The ADS129x and ADS129xR incorporate all of the features that are commonly
+  required in medical electrocardiogram (ECG) and electroencephalogram (EEG)
+  applications. With high levels of integration and exceptional performance,
+  the ADS129x and ADS129xR enables the development of scalable medical
+  instrumentation systems at significantly reduced size, power, and cost.
+
+  The common specification can be found at:
+    ADS129x:
+      http://www.ti.com/lit/gpn/ads1298
+
+properties:
+  compatible:
+    enum:
+      - ti,ads1294
+      - ti,ads1294r
+      - ti,ads1296
+      - ti,ads1296r
+      - ti,ads1298
+      - ti,ads1298r
+
+  reg:
+    maxItems: 1
+
+  reset-gpios:
+    description:
+      Reset GPIO active low.
+    maxItems: 1
+
+  interrupts:
+    description:
+      The interrupt line the device DRDY pin is connected to.
+      For details refer to ../../interrupt-controller/interrupts.txt.
+
+  spi-max-frequency:
+      Definition as per Documentation/devicetree/bindings/spi/spi-bus.txt
+  spi-cpha:
+      Definition as per	Documentation/devicetree/bindings/spi/spi-bus.txt
+
+required:
+  - compatible
+  - reg
+  - spi-cpha
+
+examples:
+  - |
+    #include <dt-bindings/gpio/gpio.h>
+    ads129x@0 {
+         compatible = "ti,ads1298";
+         reg = <0>;
+         spi-max-frequency = <100000>;
+         spi-cpha;
+         interrupt-parent = <&gpio1>;
+         interrupts = <16 IRQ_TYPE_EDGE_RISING>;
+         reset-gpios = <&gpio1 27 GPIO_ACTIVE_LOW>;
+    };
