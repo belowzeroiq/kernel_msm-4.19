@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0
+// SPDX-License-Identifier: (GPL-2.0+ OR BSD-3-Clause)
 //
 // Driver for the Texas Instruments TAS2562 CODEC
 // Copyright (C) 2019 Texas Instruments Inc.
