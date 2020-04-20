@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: GPL-2.0-only */
+// SPDX-License-Identifier: (GPL-2.0+ OR BSD-3-Clause)
 /*
  * tas2562.h - ALSA SoC Texas Instruments TAS2562 Mono Audio Amplifier
  *
