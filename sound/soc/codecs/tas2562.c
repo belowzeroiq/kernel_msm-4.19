@@ -7,6 +7,7 @@
 #include <linux/module.h>
 #include <linux/errno.h>
 #include <linux/device.h>
+#include <linux/firmware.h>
 #include <linux/i2c.h>
 #include <linux/pm_runtime.h>
 #include <linux/regmap.h>
@@ -22,6 +23,7 @@
 #include <sound/tlv.h>
 
 #include "tas2562.h"
+#include "tas25xx_dsp_loader.h"
 
 #define TAS2562_FORMATS (SNDRV_PCM_FMTBIT_S16_LE | SNDRV_PCM_FMTBIT_S24_LE |\
 			 SNDRV_PCM_FORMAT_S32_LE)
@@ -42,22 +44,6 @@ static const unsigned int float_vol_db_lookup[] = {
 0x02061b89, 0x028c423f, 0x03352529, 0x0409c2b0, 0x05156d68,
 0x080e9f96, 0x0a24b062, 0x0cc509ab, 0x10137987, 0x143d1362,
 0x197a967f, 0x2013739e, 0x28619ae9, 0x32d64617, 0x40000000
-};
-
-struct tas2562_data {
-	struct snd_soc_component *component;
-	struct gpio_desc *sdz_gpio;
-	struct regmap *regmap;
-	struct device *dev;
-	struct i2c_client *client;
-	int v_sense_slot;
-	int i_sense_slot;
-	int volume_lvl;
-};
-
-enum tas256x_model {
-	TAS2562,
-	TAS2563,
 };
 
 static int tas2562_set_bias_level(struct snd_soc_component *component,
@@ -343,6 +329,17 @@ static int tas2562_mute(struct snd_soc_dai *dai, int mute)
 					     mute ? TAS2562_MUTE : 0);
 }
 
+static void tas2562_fw_loaded(const struct firmware *fw, void *context)
+{
+	struct snd_soc_component *component = context;
+	struct tas2562_data *tas2562 = snd_soc_component_get_drvdata(component);
+	int ret;
+
+	ret = tas25xx_init_fw(tas2562, fw);
+	if (ret)
+		dev_err(tas2562->dev, "Firmware failed to initialize\n");
+}
+
 static int tas2562_codec_probe(struct snd_soc_component *component)
 {
 	struct tas2562_data *tas2562 = snd_soc_component_get_drvdata(component);
@@ -357,6 +354,12 @@ static int tas2562_codec_probe(struct snd_soc_component *component)
 					    TAS2562_MODE_MASK, TAS2562_MUTE);
 	if (ret < 0)
 		return ret;
+
+	if (tas2562->load_firmware == 0 && tas2562->model_id == TAS2563)
+		request_firmware_nowait(THIS_MODULE, FW_ACTION_HOTPLUG,
+					tas2562->firmware_name, component->dev,
+					GFP_KERNEL, component,
+					tas2562_fw_loaded);
 
 	return 0;
 }
@@ -580,7 +583,7 @@ static struct snd_soc_dai_driver tas2562_dai[] = {
 static const struct regmap_range_cfg tas2562_ranges[] = {
 	{
 		.range_min = 0,
-		.range_max = 5 * 128,
+		.range_max = 255 * 128,
 		.selector_reg = TAS2562_PAGE_CTRL,
 		.selector_mask = 0xff,
 		.selector_shift = 0,
@@ -606,7 +609,7 @@ static const struct regmap_config tas2562_regmap_config = {
 	.reg_bits = 8,
 	.val_bits = 8,
 
-	.max_register = 5 * 128,
+	.max_register = 255 * 128,
 	.cache_type = REGCACHE_RBTREE,
 	.reg_defaults = tas2562_reg_defaults,
 	.num_reg_defaults = ARRAY_SIZE(tas2562_reg_defaults),
@@ -634,6 +637,14 @@ static int tas2562_parse_dt(struct tas2562_data *tas2562)
 		dev_err(dev, "Looking up %s property failed %d\n",
 			"ti,imon-slot-no", ret);
 
+	if (tas2562->model_id != TAS2562) {
+		tas2562->load_firmware = fwnode_property_read_string(dev->fwnode,
+							"firmware-name",
+						       &tas2562->firmware_name);
+		if (tas2562->load_firmware)
+			dev_info(dev, "No firmware file to request\n");
+	}
+
 	return ret;
 }
 
@@ -650,6 +661,7 @@ static int tas2562_probe(struct i2c_client *client,
 
 	data->client = client;
 	data->dev = &client->dev;
+	data->model_id = id->driver_data;
 
 	tas2562_parse_dt(data);
 

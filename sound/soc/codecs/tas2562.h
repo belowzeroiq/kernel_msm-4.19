@@ -11,6 +11,7 @@
 #define __TAS2562_H__
 
 #define TAS2562_PAGE_CTRL	0x00
+#define TAS2562_BOOK_CTRL	0x7f
 
 #define TAS2562_REG(page, reg)	((page * 128) + reg)
 
@@ -39,6 +40,8 @@
 #define TAS2562_DVC_CFG2	TAS2562_REG(2, 0x0d)
 #define TAS2562_DVC_CFG3	TAS2562_REG(2, 0x0e)
 #define TAS2562_DVC_CFG4	TAS2562_REG(2, 0x0f)
+
+#define TAS25XX_DSP_MODE	TAS2562_REG(1, 2)
 
 #define TAS2562_RESET	BIT(0)
 
@@ -83,5 +86,27 @@
 
 #define TAS2562_TDM_CFG6_ISNS_EN	BIT(6)
 #define TAS2562_TDM_CFG6_ISNS_SLOT_MASK	GENMASK(5, 0)
+
+#define TAS2563_FW_HDR_OFFSET		134
+
+struct tas2562_data {
+	struct snd_soc_component *component;
+	struct gpio_desc *sdz_gpio;
+	struct regmap *regmap;
+	struct device *dev;
+	struct i2c_client *client;
+	struct tas25xx_fw_data *fw_data;
+	const char *firmware_name;
+	int load_firmware;
+	int model_id;
+	int v_sense_slot;
+	int i_sense_slot;
+	int volume_lvl;
+};
+
+enum tas2562_id {
+	TAS2562,
+	TAS2563,
+};
 
 #endif /* __TAS2562_H__ */
