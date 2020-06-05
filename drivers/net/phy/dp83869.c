@@ -164,7 +164,7 @@ static int dp83869_config_port_mirroring(struct phy_device *phydev)
 	return phy_write_mmd(phydev, DP83869_DEVADDR, DP83869_GEN_CFG3, val);
 }
 
-#ifdef CONFIG_OF_MDIO
+#if IS_ENABLED(CONFIG_OF_MDIO)
 static int dp83869_of_init(struct phy_device *phydev)
 {
 	struct dp83869_private *dp83869 = phydev->priv;
