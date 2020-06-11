@@ -715,11 +715,7 @@ static int adcx140_set_dai_tdm_slot(struct snd_soc_dai *codec_dai,
 	struct snd_soc_component *component = codec_dai->component;
 	struct adcx140_priv *adcx140 = snd_soc_component_get_drvdata(component);
 	unsigned int lsb;
-
-	if (tx_mask != rx_mask) {
-		dev_err(component->dev, "tx and rx masks must be symmetric\n");
-		return -EINVAL;
-	}
+	int ret;
 
 	/* TDM based on DSP mode requires slots to be adjacent */
 	lsb = __ffs(tx_mask);
@@ -741,6 +737,12 @@ static int adcx140_set_dai_tdm_slot(struct snd_soc_dai *codec_dai,
 
 	adcx140->tdm_delay = lsb;
 	adcx140->slot_width = slot_width;
+
+	ret = snd_soc_component_update_bits(adcx140->component,
+					    ADCX140_ASI_CFG1,
+					    ADCX140_TX_OFFSET_MASK, tx_mask);
+	if (ret < 0)
+		return ret;
 
 	return 0;
 }
