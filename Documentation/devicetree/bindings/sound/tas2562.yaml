@@ -37,6 +37,12 @@ properties:
     $ref: /schemas/types.yaml#/definitions/uint32
     description: TDM TX current sense time slot.
 
+  ti,vmon-slot-no:
+    $ref: /schemas/types.yaml#/definitions/uint32
+    description: |
+      TDM TX voltage sense time slot.  This slot must always be greater then
+      ti,imon-slot-no.
+
   '#sound-dai-cells':
     const: 1
 
@@ -64,6 +70,7 @@ examples:
        interrupts = <14>;
        shut-down = <&gpio1 15 0>;
        ti,imon-slot-no = <0>;
+       ti,vmon-slot-no = <2>;
      };
    };
 
