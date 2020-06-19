@@ -23,9 +23,13 @@
 #include <linux/netdevice.h>
 
 #define DP83822_PHY_ID	        0x2000a240
-#define DP83811_TC_PHY_ID	0x2000a250
-#define DP83811_A0_PHY_ID	0x2000a251
-#define DP83811_A1_PHY_ID	0x2000a253
+#define DP83822_PHY_ID	        0x2000a240
+#define DP83825S_PHY_ID		0x2000a140
+#define DP83825I_PHY_ID		0x2000a150
+#define DP83825CM_PHY_ID	0x2000a160
+#define DP83825CS_PHY_ID	0x2000a170
+#define DP83826C_PHY_ID		0x2000a130
+#define DP83826NC_PHY_ID	0x2000a110
 #define DP83822_DEVADDR		0x1f
 
 #define MII_DP83822_PHYSCR	0x11
@@ -263,17 +267,12 @@ static int dp83822_config_intr(struct phy_device *phydev)
 
 static int dp83822_config_init(struct phy_device *phydev)
 {
-	/*int err;*/
 	int value;
 
-/*	err = genphy_config_init(phydev);
-	if (err < 0)
-		return err;
-*/
-	value = DP83822_WOL_MAGIC_EN | DP83822_WOL_SECURE_ON | DP83822_WOL_EN;
+	value = ~(DP83822_WOL_MAGIC_EN | DP83822_WOL_SECURE_ON | DP83822_WOL_EN);
 
 	return phy_write_mmd(phydev, DP83822_DEVADDR, MII_DP83822_WOL_CFG,
-	      value);
+			     value);
 }
 
 static int dp83822_phy_reset(struct phy_device *phydev)
@@ -339,9 +338,12 @@ static int dp83822_resume(struct phy_device *phydev)
 
 static struct phy_driver dp83822_driver[] = {
 	DP83822_PHY_DRIVER(DP83822_PHY_ID, "TI DP83822"),
-	DP83822_PHY_DRIVER(DP83811_TC_PHY_ID, "TI DP83TC811_TC"),
-	DP83822_PHY_DRIVER(DP83811_A0_PHY_ID, "TI DP83TC811_A0"),
-	DP83822_PHY_DRIVER(DP83811_A1_PHY_ID, "TI DP83TC811_A1"),
+	DP83822_PHY_DRIVER(DP83825I_PHY_ID, "TI DP83825I"),
+	DP83822_PHY_DRIVER(DP83826C_PHY_ID, "TI DP83826C"),
+	DP83822_PHY_DRIVER(DP83826NC_PHY_ID, "TI DP83826NC"),
+	DP83822_PHY_DRIVER(DP83825S_PHY_ID, "TI DP83825S"),
+	DP83822_PHY_DRIVER(DP83825CM_PHY_ID, "TI DP83825M"),
+	DP83822_PHY_DRIVER(DP83825CS_PHY_ID, "TI DP83825CS"),
 };
 
 static int __init dp83822_init(void)
@@ -357,11 +359,14 @@ static void __exit dp83822_exit(void)
 module_exit(dp83822_exit);
 
 static struct mdio_device_id __maybe_unused dp83822_tbl[] = {
-	{DP83822_PHY_ID, 0xfffffff0},
-	{DP83811_TC_PHY_ID, 0xfffffff0},
-	{DP83811_A0_PHY_ID, 0xfffffff0},
-	{DP83811_A1_PHY_ID, 0xfffffff0},
-	{}
+	{ DP83822_PHY_ID, 0xfffffff0 },
+	{ DP83825I_PHY_ID, 0xfffffff0 },
+	{ DP83826C_PHY_ID, 0xfffffff0 },
+	{ DP83826NC_PHY_ID, 0xfffffff0 },
+	{ DP83825S_PHY_ID, 0xfffffff0 },
+	{ DP83825CM_PHY_ID, 0xfffffff0 },
+	{ DP83825CS_PHY_ID, 0xfffffff0 },
+	{ },
 };
 MODULE_DEVICE_TABLE(mdio, dp83822_tbl);
 
