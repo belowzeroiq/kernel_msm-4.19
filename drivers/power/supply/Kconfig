@@ -649,6 +649,14 @@ config CHARGER_BQ256XX
 	  charge management and system power path management devices for single
 	  cell Li-ion and Li-polymer batteries.
 
+config CHARGER_BQ25980
+	tristate "TI BQ25980 battery charger driver"
+	depends on I2C
+	depends on GPIOLIB || COMPILE_TEST
+	select REGMAP_I2C
+	help
+	  Say Y to enable support for the TI BQ25980 battery charger.
+
 config CHARGER_SMB347
 	tristate "Summit Microelectronics SMB347 Battery Charger"
 	depends on I2C
