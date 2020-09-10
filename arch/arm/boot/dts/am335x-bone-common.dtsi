@@ -376,7 +376,7 @@
 };
 
 &cpsw_emac0 {
-	phy-handle = <&ethphy0>;
+	phy-handle = <&ethphy1>;
 	phy-mode = "mii";
 };
 
@@ -394,8 +394,10 @@
 	pinctrl-1 = <&davinci_mdio_sleep>;
 	status = "okay";
 
-	ethphy0: ethernet-phy@0 {
-		reg = <0>;
+	ethphy1: ethernet-phy@1 {
+		reg = <1>;
+		interrupt-parent = <&gpio1>;
+		interrupts = <14>;
 	};
 };
 
