@@ -355,7 +355,7 @@
 
 &cpsw_emac0 {
 	phy-handle = <&ethphy0>;
-	phy-mode = "mii";
+	phy-mode = "rmii";
 };
 
 &mac {
@@ -373,7 +373,8 @@
 	status = "okay";
 
 	ethphy0: ethernet-phy@0 {
-		reg = <0>;
+		reg = <1>;
+		ti,master-slave-mode = <0>;
 	};
 };
 
