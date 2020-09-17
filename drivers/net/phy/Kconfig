@@ -398,6 +398,33 @@ config TERANETICS_PHY
 	---help---
 	  Currently supports the Teranetics TN2020
 
+config DP83TC811_PHY
+	tristate "Texas Instruments DP83TC811 PHY"
+	help
+	  Supports the DP83TC811 PHY.
+
+config DP83848_PHY
+	tristate "Texas Instruments DP83848 PHY"
+	help
+	  Supports the DP83848 PHY.
+
+config DP83867_PHY
+	tristate "Texas Instruments DP83867 Gigabit PHY"
+	help
+	  Currently supports the DP83867 PHY.
+
+config DP83869_PHY
+	tristate "Texas Instruments DP83869 Gigabit PHY"
+	help
+	  Currently supports the DP83869 PHY.  This PHY supports copper and
+	  fiber connections.
+
+config DP83TD510_PHY
+	tristate "Texas Instruments DP83TD510 10M Single Pair Ethernet PHY"
+	help
+	  Support for the DP83TD510 Ethernet PHY. This PHY supports a 10M single
+	  pair Ethernet connection.
+
 config VITESSE_PHY
 	tristate "Vitesse PHYs"
 	---help---
