@@ -397,6 +397,13 @@ config TI_DAC7612
 
 	  If compiled as a module, it will be called ti-dac7612.
 
+config TI_DAC8771
+	tristate "Texas Instruments 16-bit single channel DAC driver"
+	depends on SPI_MASTER && GPIOLIB
+	help
+	  Driver for the Texas Instruments DAC8771.
+	  If compiled as a module, it will be called ti-dac8771.
+
 config VF610_DAC
 	tristate "Vybrid vf610 DAC driver"
 	depends on OF
