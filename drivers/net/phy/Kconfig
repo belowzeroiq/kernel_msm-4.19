@@ -309,6 +309,11 @@ config DP83TD510_PHY
 	  Support for the DP83TD510 Ethernet PHY. This PHY supports a 10M single
 	  pair Ethernet connection.
 
+config DP83TG720_PHY
+	tristate "Texas Instruments DP83TG720 Gigabit PHY"
+	help
+	  Currently supports the DP83TG720 PHY.
+
 config VITESSE_PHY
 	tristate "Vitesse PHYs"
 	help
