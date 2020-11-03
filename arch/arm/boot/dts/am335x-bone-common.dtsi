@@ -354,7 +354,7 @@
 };
 
 &cpsw_emac0 {
-	phy-handle = <&ethphy0>;
+	phy-handle = <&ethphy8>;
 	phy-mode = "mii";
 };
 
@@ -374,6 +374,9 @@
 
 	ethphy0: ethernet-phy@0 {
 		reg = <0>;
+	};
+	ethphy8: ethernet-phy@8 {
+		reg = <8>;
 	};
 };
 
