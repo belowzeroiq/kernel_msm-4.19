@@ -16,13 +16,19 @@
 #include <linux/netdevice.h>
 
 #define DP83TC811_PHY_ID	0x2000a253
+#define DP83TC812_PHY_ID	0x2000a270
+#define DP83TC813_PHY_ID	0x2000a210
+#define DP83TC814_PHY_ID	0x2000a260
+#define DP83TC815_PHY_ID	0x2000a200
 #define DP83811_DEVADDR		0x1f
+#define DP83811_PMD_DEVADDR	0x1
 
 #define MII_DP83811_SGMII_CTRL	0x09
 #define MII_DP83811_INT_STAT1	0x12
 #define MII_DP83811_INT_STAT2	0x13
 #define MII_DP83811_INT_STAT3	0x18
 #define MII_DP83811_RESET_CTRL	0x1f
+#define DP83811_PMD_CTRL	0x834
 
 #define DP83811_HW_RESET	BIT(15)
 #define DP83811_SW_RESET	BIT(14)
@@ -75,23 +81,142 @@
 #define DP83811_SGMII_TX_ERR_DIS	BIT(14)
 #define DP83811_SGMII_SOFT_RESET	BIT(15)
 
-static int dp83811_ack_interrupt(struct phy_device *phydev)
+#define DP83811_MASTER_MODE	BIT(14)
+
+const int dp83tc811_feature_array[3] = {
+	//ETHTOOL_LINK_MODE_100baseT1_Half_BIT,
+	ETHTOOL_LINK_MODE_100baseT1_Full_BIT,
+	ETHTOOL_LINK_MODE_TP_BIT,
+	ETHTOOL_LINK_MODE_Autoneg_BIT,
+};
+
+struct dp83812_init_reg {
+	int reg;
+	int val;
+};
+
+static const struct dp83812_init_reg dp8381x_master_init[] = {
+	{0x523, 0x001},
+	{0x800, 0xf864},
+	{0x803, 0x1552},
+	{0x804, 0x1a66},
+	{0x805, 0x1f7B},
+	{0x81f, 0x2a88},
+	{0x825, 0x40e5},
+	{0x82b, 0x7f3f},
+	{0x830, 0x543},
+	{0x836, 0x5008},
+	{0x83A, 0x8e0},
+	{0x83B, 0x845},
+	{0x83e, 0x445},
+	{0x855, 0x9B9a},
+	{0x85f, 0x2010},
+	{0x860, 0x6040},
+	{0x86c, 0x1333},
+	{0x86b, 0x3e10},
+	{0x872, 0x88c0},
+	{0x873, 0x003},
+	{0x879, 0x00f},
+	{0x87b, 0x070},
+	{0x87c, 0x002},
+	{0x897, 0x03f},
+	{0x89e, 0x0aa},
+	{0x510, 0x00f},
+	{0x01f, 0x4000},
+	{0x523, 0x000},
+};
+
+static const struct dp83812_init_reg dp8381x_slave_init[] = {
+	{0x523, 0x001},
+	{0x803, 0x1B52},
+	{0x804, 0x2166},
+	{0x805, 0x277B},
+	{0x827, 0x3000},
+	{0x830, 0x543},
+	{0x83a, 0x020},
+	{0x83c, 0x001},
+	{0x855, 0x9B9A},
+	{0x85f, 0x2010},
+	{0x860, 0x6040},
+	{0x86c, 0x333},
+	{0x872, 0x88C0},
+	{0x873, 0x021},
+	{0x879, 0x00f},
+	{0x87b, 0x070},
+	{0x87c, 0x002},
+	{0x897, 0x03f},
+	{0x89e, 0x0a2},
+	{0x510, 0x00f},
+	{0x01f, 0x4000},
+	{0x523, 0x000},
+};
+
+struct dp83811_private {
+	int chip;
+	bool is_master;
+};
+
+
+static int dp83811_reset(struct phy_device *phydev, bool hw_reset)
 {
-	int err;
+	int ret;
 
-	err = phy_read(phydev, MII_DP83811_INT_STAT1);
-	if (err < 0)
-		return err;
+	if (hw_reset)
+		ret = phy_write(phydev, MII_DP83811_RESET_CTRL,
+				DP83811_HW_RESET);
+	else
+		ret = phy_write(phydev, MII_DP83811_RESET_CTRL,
+				DP83811_SW_RESET);
 
-	err = phy_read(phydev, MII_DP83811_INT_STAT2);
-	if (err < 0)
-		return err;
+	if (ret)
+		return ret;
 
-	err = phy_read(phydev, MII_DP83811_INT_STAT3);
-	if (err < 0)
-		return err;
+	mdelay(100);
 
 	return 0;
+}
+
+static irqreturn_t dp83811_handle_interrupt(struct phy_device *phydev)
+{
+	int irq_status;
+
+	/* The INT_STAT registers 1, 2 and 3 are holding the interrupt status
+	 * in the upper half (15:8), while the lower half (7:0) is used for
+	 * controlling the interrupt enable state of those individual interrupt
+	 * sources. To determine the possible interrupt sources, just read the
+	 * INT_STAT* register and use it directly to know which interrupts have
+	 * been enabled previously or not.
+	 */
+	irq_status = phy_read(phydev, MII_DP83811_INT_STAT1);
+	if (irq_status < 0) {
+		phy_error(phydev);
+		return IRQ_NONE;
+	}
+	if (irq_status & ((irq_status & GENMASK(7, 0)) << 8))
+		goto trigger_machine;
+
+	irq_status = phy_read(phydev, MII_DP83811_INT_STAT2);
+	if (irq_status < 0) {
+		phy_error(phydev);
+		return IRQ_NONE;
+	}
+	if (irq_status & ((irq_status & GENMASK(7, 0)) << 8))
+		goto trigger_machine;
+
+	irq_status = phy_read(phydev, MII_DP83811_INT_STAT3);
+	if (irq_status < 0) {
+		phy_error(phydev);
+		return IRQ_NONE;
+	}
+	if (irq_status & ((irq_status & GENMASK(7, 0)) << 8))
+		goto trigger_machine;
+
+	return IRQ_NONE;
+
+trigger_machine:
+	phy_trigger_machine(phydev);
+
+	return IRQ_HANDLED;
 }
 
 static int dp83811_set_wol(struct phy_device *phydev,
@@ -197,7 +322,7 @@ static int dp83811_config_intr(struct phy_device *phydev)
 	int misr_status, err;
 
 	if (phydev->interrupts == PHY_INTERRUPT_ENABLED) {
-		err = dp83811_ack_interrupt(phydev);
+		err = dp83811_handle_interrupt(phydev);
 		if (err)
 			return err;
 
@@ -256,53 +381,108 @@ static int dp83811_config_intr(struct phy_device *phydev)
 		if (err < 0)
 			return err;
 
-		err = dp83811_ack_interrupt(phydev);
+		err = dp83811_handle_interrupt(phydev);
 	}
 
 	return err;
 }
 
-static irqreturn_t dp83811_handle_interrupt(struct phy_device *phydev)
+static int dp83811_write_seq(struct phy_device *phydev,
+			     const struct dp83812_init_reg *init_data, int size)
 {
-	int irq_status;
+	int ret;
+	int i;
 
-	/* The INT_STAT registers 1, 2 and 3 are holding the interrupt status
-	 * in the upper half (15:8), while the lower half (7:0) is used for
-	 * controlling the interrupt enable state of those individual interrupt
-	 * sources. To determine the possible interrupt sources, just read the
-	 * INT_STAT* register and use it directly to know which interrupts have
-	 * been enabled previously or not.
-	 */
-	irq_status = phy_read(phydev, MII_DP83811_INT_STAT1);
-	if (irq_status < 0) {
-		phy_error(phydev);
-		return IRQ_NONE;
+	for (i = 0; i < size; i++) {
+	        ret = phy_write_mmd(phydev, DP83811_DEVADDR, init_data[i].reg,
+				init_data[i].val);
+	        if (ret)
+	                return ret;
 	}
-	if (irq_status & ((irq_status & GENMASK(7, 0)) << 8))
-		goto trigger_machine;
 
-	irq_status = phy_read(phydev, MII_DP83811_INT_STAT2);
-	if (irq_status < 0) {
-		phy_error(phydev);
-		return IRQ_NONE;
+	return 0;
+}
+
+static int dp83811_set_master_slave(struct phy_device *phydev)
+{
+	int mst_slave_cfg;
+
+	mst_slave_cfg = phy_read_mmd(phydev, DP83811_PMD_DEVADDR,
+				     DP83811_PMD_CTRL);
+	if (mst_slave_cfg < 0)
+		return mst_slave_cfg;
+
+	if (mst_slave_cfg & DP83811_MASTER_MODE) {
+		if (phydev->autoneg) {
+			phydev->master_slave_get = MASTER_SLAVE_CFG_MASTER_PREFERRED;
+			phydev->master_slave_set = MASTER_SLAVE_CFG_MASTER_PREFERRED;
+		} else {
+			phydev->master_slave_get = MASTER_SLAVE_CFG_MASTER_FORCE;
+			phydev->master_slave_set = MASTER_SLAVE_CFG_MASTER_FORCE;
+		}
+	} else {
+		if (phydev->autoneg) {
+			phydev->master_slave_get = MASTER_SLAVE_CFG_SLAVE_PREFERRED;
+			phydev->master_slave_set = MASTER_SLAVE_CFG_SLAVE_PREFERRED;
+		} else {
+			phydev->master_slave_get = MASTER_SLAVE_CFG_SLAVE_FORCE;
+			phydev->master_slave_set = MASTER_SLAVE_CFG_SLAVE_FORCE;
+		}
 	}
-	if (irq_status & ((irq_status & GENMASK(7, 0)) << 8))
-		goto trigger_machine;
 
-	irq_status = phy_read(phydev, MII_DP83811_INT_STAT3);
-	if (irq_status < 0) {
-		phy_error(phydev);
-		return IRQ_NONE;
+	return 0;
+}
+
+static int dp8381x_chip_init(struct phy_device *phydev)
+{
+	struct dp83811_private *dp83811 = phydev->priv;
+	int err;
+
+	err = dp83811_reset(phydev, true);
+	if (err)
+		return err;
+
+	if (phydev->phy_id != DP83TC811_PHY_ID) {
+		err = phy_write_mmd(phydev, DP83811_DEVADDR, 0x573, 0x101);
+		if (err)
+			return err;
+
+		if (dp83811->is_master) {
+			err = phy_write_mmd(phydev, DP83811_PMD_DEVADDR,
+					    DP83811_PMD_CTRL,
+					    0x8001 | DP83811_MASTER_MODE);
+			if (err)
+				return err;
+
+			err = dp83811_write_seq(phydev, dp8381x_master_init,
+						ARRAY_SIZE(dp8381x_master_init));
+		} else {
+			err = phy_write_mmd(phydev, DP83811_PMD_DEVADDR,
+					    DP83811_PMD_CTRL, 0x8001);
+			if (err)
+				return err;
+
+			err = dp83811_write_seq(phydev, dp8381x_slave_init,
+						ARRAY_SIZE(dp8381x_slave_init));
+		}
+
+		err = dp83811_reset(phydev, false);
+		if (err)
+			return err;
 	}
-	if (irq_status & ((irq_status & GENMASK(7, 0)) << 8))
-		goto trigger_machine;
 
-	return IRQ_NONE;
+	return 0;
+}
 
-trigger_machine:
-	phy_trigger_machine(phydev);
+static int dp8381x_read_status(struct phy_device *phydev)
+{
+	int ret;
 
-	return IRQ_HANDLED;
+	ret = genphy_update_link(phydev);
+	if (ret)
+		return ret;
+
+	return dp83811_set_master_slave(phydev);
 }
 
 static int dp83811_config_aneg(struct phy_device *phydev)
@@ -332,14 +512,12 @@ static int dp83811_config_init(struct phy_device *phydev)
 	int value, err;
 
 	value = phy_read(phydev, MII_DP83811_SGMII_CTRL);
-	if (phydev->interface == PHY_INTERFACE_MODE_SGMII) {
+	if (phydev->interface == PHY_INTERFACE_MODE_SGMII)
 		err = phy_write(phydev, MII_DP83811_SGMII_CTRL,
 					(DP83811_SGMII_EN | value));
-	} else {
+	else
 		err = phy_write(phydev, MII_DP83811_SGMII_CTRL,
 				(~DP83811_SGMII_EN & value));
-	}
-
 	if (err < 0)
 
 		return err;
@@ -383,27 +561,84 @@ static int dp83811_resume(struct phy_device *phydev)
 	return 0;
 }
 
-static struct phy_driver dp83811_driver[] = {
-	{
-		.phy_id = DP83TC811_PHY_ID,
-		.phy_id_mask = 0xfffffff0,
-		.name = "TI DP83TC811",
-		/* PHY_BASIC_FEATURES */
-		.config_init = dp83811_config_init,
-		.config_aneg = dp83811_config_aneg,
-		.soft_reset = dp83811_phy_reset,
-		.get_wol = dp83811_get_wol,
-		.set_wol = dp83811_set_wol,
-		.config_intr = dp83811_config_intr,
-		.handle_interrupt = dp83811_handle_interrupt,
-		.suspend = dp83811_suspend,
-		.resume = dp83811_resume,
-	 },
+static int dp83tc811_get_features(struct phy_device *phydev)
+{
+	genphy_read_abilities(phydev);
+
+	linkmode_set_bit_array(dp83tc811_feature_array,
+			       ARRAY_SIZE(dp83tc811_feature_array),
+			       phydev->supported);
+
+	/* Only allow advertising what this PHY supports */
+	linkmode_and(phydev->advertising, phydev->advertising,
+		     phydev->supported);
+
+	return 0;
+}
+
+static int dp83811_probe(struct phy_device *phydev)
+{
+	struct dp83811_private *dp83811;
+	int ret;
+
+	dp83811 = devm_kzalloc(&phydev->mdio.dev, sizeof(*dp83811),
+			       GFP_KERNEL);
+	if (!dp83811)
+		return -ENOMEM;
+
+	phydev->priv = dp83811;
+
+	return dp8381x_chip_init(phydev);
+}
+
+#define DP83TC81X_PHY_DRIVER(_id, _name)			\
+	{							\
+		PHY_ID_MATCH_MODEL(_id),			\
+		.name		= (_name),			\
+		.config_init = dp83811_config_init,		\
+		.config_aneg = dp83811_config_aneg,		\
+		.soft_reset = dp83811_phy_reset,		\
+		.get_wol = dp83811_get_wol,			\
+		.set_wol = dp83811_set_wol,			\
+		.read_status = dp8381x_read_status,		\
+		.handle_interrupt = dp83811_handle_interrupt,	\
+		.config_intr = dp83811_config_intr,		\
+		.suspend = dp83811_suspend,			\
+		.resume = dp83811_resume,			\
+		.get_features	= dp83tc811_get_features,	\
+	 }
+
+#define DP83TC811_PHY_DRIVER(_id, _name)			\
+	{							\
+		PHY_ID_MATCH_MODEL(_id),			\
+		.name		= (_name),			\
+		.config_init = dp83811_config_init,		\
+		.config_aneg = dp83811_config_aneg,		\
+		.soft_reset = dp83811_phy_reset,		\
+		.get_wol = dp83811_get_wol,			\
+		.set_wol = dp83811_set_wol,			\
+		.handle_interrupt = dp83811_handle_interrupt,	\
+		.config_intr = dp83811_config_intr,		\
+		.suspend = dp83811_suspend,			\
+		.resume = dp83811_resume,			\
+		.get_features	= dp83tc811_get_features,	\
+	 }
+
+static struct phy_driver dp83tc811_driver[] = {
+	DP83TC811_PHY_DRIVER(DP83TC811_PHY_ID, "TI DP83TC811"),
+	DP83TC81X_PHY_DRIVER(DP83TC812_PHY_ID, "TI DP83TC812"),
+	DP83TC81X_PHY_DRIVER(DP83TC813_PHY_ID, "TI DP83TC813"),
+	DP83TC81X_PHY_DRIVER(DP83TC814_PHY_ID, "TI DP83TC814"),
+	DP83TC81X_PHY_DRIVER(DP83TC815_PHY_ID, "TI DP83TC815"),
 };
-module_phy_driver(dp83811_driver);
+module_phy_driver(dp83tc811_driver);
 
 static struct mdio_device_id __maybe_unused dp83811_tbl[] = {
 	{ DP83TC811_PHY_ID, 0xfffffff0 },
+	{ DP83TC812_PHY_ID, 0xfffffff0 },
+	{ DP83TC813_PHY_ID, 0xfffffff0 },
+	{ DP83TC814_PHY_ID, 0xfffffff0 },
+	{ DP83TC815_PHY_ID, 0xfffffff0 },
 	{ },
 };
 MODULE_DEVICE_TABLE(mdio, dp83811_tbl);
