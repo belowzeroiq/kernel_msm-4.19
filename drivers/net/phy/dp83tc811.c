@@ -16,6 +16,10 @@
 #include <linux/netdevice.h>
 
 #define DP83TC811_PHY_ID	0x2000a253
+#define DP83TC812_PHY_ID	0x2000a270
+#define DP83TC813_PHY_ID	0x2000a210
+#define DP83TC814_PHY_ID	0x2000a260
+#define DP83TC815_PHY_ID	0x2000a200
 #define DP83811_DEVADDR		0x1f
 
 #define MII_DP83811_SGMII_CTRL	0x09
@@ -74,6 +78,14 @@
 #define DP83811_SGMII_AUTO_NEG_EN	BIT(13)
 #define DP83811_SGMII_TX_ERR_DIS	BIT(14)
 #define DP83811_SGMII_SOFT_RESET	BIT(15)
+
+const int dp83tc811_feature_array[3] = {
+	//ETHTOOL_LINK_MODE_100baseT1_Half_BIT,
+	ETHTOOL_LINK_MODE_100baseT1_Full_BIT,
+	ETHTOOL_LINK_MODE_TP_BIT,
+	ETHTOOL_LINK_MODE_Autoneg_BIT,
+};
+
 
 static int dp83811_ack_interrupt(struct phy_device *phydev)
 {
@@ -332,27 +344,52 @@ static int dp83811_resume(struct phy_device *phydev)
 	return 0;
 }
 
-static struct phy_driver dp83811_driver[] = {
-	{
-		.phy_id = DP83TC811_PHY_ID,
-		.phy_id_mask = 0xfffffff0,
-		.name = "TI DP83TC811",
-		/* PHY_BASIC_FEATURES */
-		.config_init = dp83811_config_init,
-		.config_aneg = dp83811_config_aneg,
-		.soft_reset = dp83811_phy_reset,
-		.get_wol = dp83811_get_wol,
-		.set_wol = dp83811_set_wol,
-		.ack_interrupt = dp83811_ack_interrupt,
-		.config_intr = dp83811_config_intr,
-		.suspend = dp83811_suspend,
-		.resume = dp83811_resume,
-	 },
+static int dp83tc811_get_features(struct phy_device *phydev)
+{
+	genphy_read_abilities(phydev);
+
+	linkmode_set_bit_array(dp83tc811_feature_array,
+			       ARRAY_SIZE(dp83tc811_feature_array),
+			       phydev->supported);
+
+	/* Only allow advertising what this PHY supports */
+	linkmode_and(phydev->advertising, phydev->advertising,
+		     phydev->supported);
+
+	return 0;
+}
+
+#define DP83TC81X_PHY_DRIVER(_id, _name)			\
+	{							\
+		PHY_ID_MATCH_MODEL(_id),			\
+		.name		= (_name),			\
+		.config_init = dp83811_config_init,		\
+		.config_aneg = dp83811_config_aneg,		\
+		.soft_reset = dp83811_phy_reset,		\
+		.get_wol = dp83811_get_wol,			\
+		.set_wol = dp83811_set_wol,			\
+		.ack_interrupt = dp83811_ack_interrupt,		\
+		.config_intr = dp83811_config_intr,		\
+		.suspend = dp83811_suspend,			\
+		.resume = dp83811_resume,			\
+		.get_features	= dp83tc811_get_features,	\
+	 }
+
+static struct phy_driver dp83tc811_driver[] = {
+	DP83TC81X_PHY_DRIVER(DP83TC811_PHY_ID, "TI DP83TC811"),
+	DP83TC81X_PHY_DRIVER(DP83TC812_PHY_ID, "TI DP83TC812"),
+	DP83TC81X_PHY_DRIVER(DP83TC813_PHY_ID, "TI DP83TC813"),
+	DP83TC81X_PHY_DRIVER(DP83TC814_PHY_ID, "TI DP83TC814"),
+	DP83TC81X_PHY_DRIVER(DP83TC815_PHY_ID, "TI DP83TC815"),
 };
-module_phy_driver(dp83811_driver);
+module_phy_driver(dp83tc811_driver);
 
 static struct mdio_device_id __maybe_unused dp83811_tbl[] = {
 	{ DP83TC811_PHY_ID, 0xfffffff0 },
+	{ DP83TC812_PHY_ID, 0xfffffff0 },
+	{ DP83TC813_PHY_ID, 0xfffffff0 },
+	{ DP83TC814_PHY_ID, 0xfffffff0 },
+	{ DP83TC815_PHY_ID, 0xfffffff0 },
 	{ },
 };
 MODULE_DEVICE_TABLE(mdio, dp83811_tbl);
