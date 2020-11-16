@@ -128,6 +128,11 @@ config DP83867_PHY
 	---help---
 	  Currently supports the DP83867 PHY.
 
+config DP83TC811_PHY
+	tristate "Texas Instruments DP83TC811 PHY"
+	---help---
+	  Supports the DP83TC811 PHY.
+
 config FIXED_PHY
 	bool "Driver for MDIO Bus/PHY emulation with fixed speed/link PHYs"
 	depends on PHYLIB=y
