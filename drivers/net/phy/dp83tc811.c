@@ -94,6 +94,63 @@ struct dp83812_init_reg {
 	int reg;
 	int val;
 };
+static const struct dp83812_init_reg dp83811_init[] = {
+	{0x0475, 0x0008},
+	{0x0485, 0x11ff},
+	{0x0462, 0x0600},
+	{0x010F, 0x0100},
+	{0x0410, 0x6000},
+	{0x0479, 0x0442},
+	{0x0466, 0x8000},
+	{0x0107, 0x2605},
+	{0x0106, 0xb8bb},
+	{0x0116, 0x03CA},
+	{0x0114, 0xC00A},
+	{0x010b, 0x0700},
+	{0x0132, 0x01EE},
+	{0x04de, 0x03f0},
+	{0x003e, 0x000d},
+	{0x0129, 0x009F},
+	{0x04d5, 0xFEA4},
+	{0x0111, 0x6009},
+	{0x04d6, 0x0EA4},
+	{0x0120, 0x0067},
+	{0x0125, 0x7a56},
+	{0x0461, 0x0408},
+	{0x0400, 0x1300},
+	{0x0403, 0x0030},
+	{0x0404, 0x0008},
+	{0x048a, 0x0d02},
+	{0x048b, 0x350f},
+	{0x048c, 0x0033},
+	{0x048d, 0x010d},
+	{0x0475, 0x0000},
+};
+
+static const struct dp83812_init_reg dp83811_master_init[] = {
+	{0x0121, 0x1500},
+	{0x0122, 0x1000},
+	{0x04D4, 0x7522},
+	{0x0130, 0xc720},
+	{0x0126, 0x0515},
+	{0x0119, 0x00a4},
+	{0x0109, 0x095d},
+	{0x010e, 0x3219},
+	{0x010c, 0x1996},
+};
+
+static const struct dp83812_init_reg dp83811_slave_init[] = {
+	{0x0121, 0x1500},
+	{0x0122, 0x1450},
+	{0x04D4, 0x7322},
+	{0x0130, 0xC780},
+	{0x0126, 0x0495},
+	{0x0115, 0x8ac8},
+	{0x0109, 0x095d},
+	{0x010e, 0xfafb},
+	{0x010c, 0x19fa},
+	{0x0101, 0x2082},
+};
 
 static const struct dp83812_init_reg dp8381x_master_init[] = {
 	{0x523, 0x001},
@@ -466,10 +523,32 @@ static int dp8381x_chip_init(struct phy_device *phydev)
 						ARRAY_SIZE(dp8381x_slave_init));
 		}
 
-		err = dp83811_reset(phydev, false);
-		if (err)
-			return err;
+	} else {
+		err = dp83811_write_seq(phydev, dp83811_init,
+					ARRAY_SIZE(dp83811_init));
+		if (dp83811->is_master) {
+			err = phy_write_mmd(phydev, DP83811_PMD_DEVADDR,
+					    DP83811_PMD_CTRL,
+					    0x8001 | DP83811_MASTER_MODE);
+			if (err)
+				return err;
+
+			err = dp83811_write_seq(phydev, dp83811_master_init,
+						ARRAY_SIZE(dp83811_master_init));
+		} else {
+			err = phy_write_mmd(phydev, DP83811_PMD_DEVADDR,
+					    DP83811_PMD_CTRL, 0x8001);
+			if (err)
+				return err;
+
+			err = dp83811_write_seq(phydev, dp83811_slave_init,
+						ARRAY_SIZE(dp83811_slave_init));
+		}
 	}
+
+	err = dp83811_reset(phydev, false);
+	if (err)
+		return err;
 
 	return 0;
 }
@@ -579,7 +658,6 @@ static int dp83tc811_get_features(struct phy_device *phydev)
 static int dp83811_probe(struct phy_device *phydev)
 {
 	struct dp83811_private *dp83811;
-	int ret;
 
 	dp83811 = devm_kzalloc(&phydev->mdio.dev, sizeof(*dp83811),
 			       GFP_KERNEL);
@@ -595,6 +673,7 @@ static int dp83811_probe(struct phy_device *phydev)
 	{							\
 		PHY_ID_MATCH_MODEL(_id),			\
 		.name		= (_name),			\
+		.probe          = dp83811_probe,		\
 		.config_init = dp83811_config_init,		\
 		.config_aneg = dp83811_config_aneg,		\
 		.soft_reset = dp83811_phy_reset,		\
@@ -608,24 +687,8 @@ static int dp83811_probe(struct phy_device *phydev)
 		.get_features	= dp83tc811_get_features,	\
 	 }
 
-#define DP83TC811_PHY_DRIVER(_id, _name)			\
-	{							\
-		PHY_ID_MATCH_MODEL(_id),			\
-		.name		= (_name),			\
-		.config_init = dp83811_config_init,		\
-		.config_aneg = dp83811_config_aneg,		\
-		.soft_reset = dp83811_phy_reset,		\
-		.get_wol = dp83811_get_wol,			\
-		.set_wol = dp83811_set_wol,			\
-		.handle_interrupt = dp83811_handle_interrupt,	\
-		.config_intr = dp83811_config_intr,		\
-		.suspend = dp83811_suspend,			\
-		.resume = dp83811_resume,			\
-		.get_features	= dp83tc811_get_features,	\
-	 }
-
 static struct phy_driver dp83tc811_driver[] = {
-	DP83TC811_PHY_DRIVER(DP83TC811_PHY_ID, "TI DP83TC811"),
+	DP83TC81X_PHY_DRIVER(DP83TC811_PHY_ID, "TI DP83TC811"),
 	DP83TC81X_PHY_DRIVER(DP83TC812_PHY_ID, "TI DP83TC812"),
 	DP83TC81X_PHY_DRIVER(DP83TC813_PHY_ID, "TI DP83TC813"),
 	DP83TC81X_PHY_DRIVER(DP83TC814_PHY_ID, "TI DP83TC814"),
