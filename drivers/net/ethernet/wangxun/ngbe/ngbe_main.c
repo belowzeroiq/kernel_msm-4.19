@@ -9,6 +9,7 @@
 #include <linux/etherdevice.h>
 #include <net/ip.h>
 #include <linux/phy.h>
+#include <linux/if_vlan.h>
 
 #include "../libwx/wx_type.h"
 #include "../libwx/wx_hw.h"
@@ -351,7 +352,7 @@ static void ngbe_up(struct wx *wx)
 	netif_tx_start_all_queues(wx->netdev);
 
 	/* clear any pending interrupts, may auto mask */
-	rd32(wx, WX_PX_IC);
+	rd32(wx, WX_PX_IC(0));
 	rd32(wx, WX_PX_MISC_IC);
 	ngbe_irq_enable(wx, true);
 	if (wx->gpio_ctrl)
@@ -469,6 +470,7 @@ static void ngbe_shutdown(struct pci_dev *pdev)
 static const struct net_device_ops ngbe_netdev_ops = {
 	.ndo_open               = ngbe_open,
 	.ndo_stop               = ngbe_close,
+	.ndo_change_mtu         = wx_change_mtu,
 	.ndo_start_xmit         = wx_xmit_frame,
 	.ndo_set_rx_mode        = wx_set_rx_mode,
 	.ndo_validate_addr      = eth_validate_addr,
@@ -560,7 +562,8 @@ static int ngbe_probe(struct pci_dev *pdev,
 	netdev->priv_flags |= IFF_SUPP_NOFCS;
 
 	netdev->min_mtu = ETH_MIN_MTU;
-	netdev->max_mtu = NGBE_MAX_JUMBO_FRAME_SIZE - (ETH_HLEN + ETH_FCS_LEN);
+	netdev->max_mtu = WX_MAX_JUMBO_FRAME_SIZE -
+			  (ETH_HLEN + ETH_FCS_LEN + VLAN_HLEN);
 
 	wx->bd_number = func_nums;
 	/* setup the private structure */
