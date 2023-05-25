@@ -7,13 +7,12 @@
 #include <linux/in6.h>
 #include <linux/rbtree_types.h>
 #include <linux/refcount.h>
-#include <net/dropreason.h>
+#include <net/dropreason-core.h>
 
 /* Per netns frag queues directory */
 struct fqdir {
 	/* sysctls */
 	long			high_thresh;
-	long			low_thresh;
 	int			timeout;
 	int			max_dist;
 	struct inet_frags	*f;
