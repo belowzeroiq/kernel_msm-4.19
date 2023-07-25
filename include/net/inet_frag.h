@@ -13,6 +13,7 @@
 struct fqdir {
 	/* sysctls */
 	long			high_thresh;
+	long			low_thresh;
 	int			timeout;
 	int			max_dist;
 	struct inet_frags	*f;
@@ -28,7 +29,7 @@ struct fqdir {
 };
 
 /**
- * fragment queue flags
+ * enum: fragment queue flags
  *
  * @INET_FRAG_FIRST_IN: first fragment has arrived
  * @INET_FRAG_LAST_IN: final fragment has arrived
