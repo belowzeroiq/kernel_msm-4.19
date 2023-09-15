@@ -17,7 +17,7 @@
 /* Num VDEVS per radio */
 #define TARGET_NUM_VDEVS	(16 + 1)
 
-#define TARGET_NUM_PEERS_PDEV	(512 + TARGET_NUM_VDEVS)
+#define TARGET_NUM_PEERS_PDEV	(TARGET_NUM_STATIONS + TARGET_NUM_VDEVS)
 
 /* Num of peers for Single Radio mode */
 #define TARGET_NUM_PEERS_SINGLE		(TARGET_NUM_PEERS_PDEV)
@@ -29,7 +29,7 @@
 #define TARGET_NUM_PEERS_DBS_SBS	(3 * TARGET_NUM_PEERS_PDEV)
 
 /* Max num of stations (per radio) */
-#define TARGET_NUM_STATIONS	512
+#define TARGET_NUM_STATIONS	128
 
 #define TARGET_NUM_PEERS(x)	TARGET_NUM_PEERS_##x
 #define TARGET_NUM_PEER_KEYS	2
