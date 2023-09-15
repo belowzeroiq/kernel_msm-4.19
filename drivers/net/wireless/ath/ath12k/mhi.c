@@ -351,13 +351,15 @@ int ath12k_mhi_register(struct ath12k_pci *ab_pci)
 {
 	struct ath12k_base *ab = ab_pci->ab;
 	struct mhi_controller *mhi_ctrl;
+	unsigned int board_id;
+	const char *filename = ATH12K_AMSS_FILE;
 	int ret;
 
 	mhi_ctrl = mhi_alloc_controller();
 	if (!mhi_ctrl)
 		return -ENOMEM;
 
-	ath12k_core_create_firmware_path(ab, ATH12K_AMSS_FILE,
+	ath12k_core_create_firmware_path(ab, filename,
 					 ab_pci->amss_path,
 					 sizeof(ab_pci->amss_path));
 
