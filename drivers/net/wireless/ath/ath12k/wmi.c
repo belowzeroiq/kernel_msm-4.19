@@ -479,7 +479,7 @@ ath12k_pull_mac_phy_cap_svc_ready_ext(struct ath12k_wmi_pdev *wmi_handle,
 			break;
 
 		phy_map = le32_to_cpu(wmi_hw_mode_caps[hw_idx].phy_id_map);
-		phy_idx = fls(phy_map);
+		phy_idx = fls (phy_map);
 	}
 
 	if (hw_idx == le32_to_cpu(hw_caps->num_hw_modes))
@@ -4189,7 +4189,7 @@ ath12k_wmi_tlv_mac_phy_caps_ext_parse(struct ath12k_base *ab,
 		for (i = 0; i < ab->fw_pdev_count; i++) {
 			struct ath12k_fw_pdev *fw_pdev = &ab->fw_pdev[i];
 
-			if (fw_pdev->pdev_id == le32_to_cpu(caps->pdev_id) &&
+			if (fw_pdev->pdev_id == le32_to_cpu(caps->u.ath12k_wmi_pdev_to_link_map.pdev_id) &&
 			    fw_pdev->phy_id == le32_to_cpu(caps->phy_id)) {
 				bands = fw_pdev->supported_bands;
 				break;
@@ -4245,7 +4245,7 @@ static int ath12k_wmi_tlv_mac_phy_caps_ext(struct ath12k_base *ab, u16 tag,
 			return 0;
 	} else {
 		for (i = 0; i < ab->num_radios; i++) {
-			if (ab->pdevs[i].pdev_id == le32_to_cpu(caps->pdev_id))
+			if (ab->pdevs[i].pdev_id == le32_to_cpu(caps->u.ath12k_wmi_pdev_to_link_map.pdev_id))
 				break;
 		}
 

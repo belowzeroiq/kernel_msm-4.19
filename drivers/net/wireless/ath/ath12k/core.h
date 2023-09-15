@@ -617,7 +617,7 @@ struct mlo_timestamp {
 
 struct ath12k_pdev {
 	struct ath12k *ar;
-	u32 pdev_id;
+	u16 pdev_id;
 	struct ath12k_pdev_cap cap;
 	u8 mac_addr[ETH_ALEN];
 	struct mlo_timestamp timestamp;
