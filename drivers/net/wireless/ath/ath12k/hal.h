@@ -1077,6 +1077,8 @@ struct hal_ops {
 	bool (*dp_rx_h_is_decrypted)(struct hal_rx_desc *desc);
 	u32 (*dp_rx_h_mpdu_err)(struct hal_rx_desc *desc);
 	const struct ath12k_hal_tcl_to_wbm_rbm_map *tcl_to_wbm_rbm_map;
+	u16 (*rxdma_ring_wmask_rx_mpdu_start)(void);
+	u32 (*rxdma_ring_wmask_rx_msdu_end)(void);
 };
 
 extern const struct hal_ops hal_qcn9274_ops;
