@@ -13,6 +13,8 @@
 #include "pci.h"
 
 #define MHI_TIMEOUT_DEFAULT_MS	90000
+#define OTP_INVALID_BOARD_ID	0xFFFF
+#define OTP_VALID_BOARD_ID_MASK		0x1000
 
 static const struct mhi_channel_config ath12k_mhi_channels_qcn9274[] = {
 	{
@@ -351,13 +353,26 @@ int ath12k_mhi_register(struct ath12k_pci *ab_pci)
 {
 	struct ath12k_base *ab = ab_pci->ab;
 	struct mhi_controller *mhi_ctrl;
-	unsigned int board_id;
+	unsigned int board_id, otp_board_id;
 	const char *filename = ATH12K_AMSS_FILE;
 	int ret;
 
 	mhi_ctrl = mhi_alloc_controller();
 	if (!mhi_ctrl)
 		return -ENOMEM;
+
+	otp_board_id = ath12k_pci_read32(ab, QCN9224_QFPROM_RAW_RFA_PDET_ROW13_LSB);
+
+	board_id = FIELD_GET(OTP_BOARD_ID_MASK, otp_board_id);
+	if (!board_id || (board_id == OTP_INVALID_BOARD_ID)) {
+		ath12k_warn(ab, "failed to read board id\n");
+	}
+
+	if (board_id & OTP_VALID_BOARD_ID_MASK) {
+		filename = ATH12K_AMSS_DUALMAC_FILE;
+		ath12k_dbg(ab, ATH12K_DBG_BOOT,
+			   "dualmac fw selected for board id: %x\n", board_id);
+	}
 
 	ath12k_core_create_firmware_path(ab, filename,
 					 ab_pci->amss_path,
