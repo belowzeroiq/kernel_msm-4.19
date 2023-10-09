@@ -48,6 +48,7 @@
 #include "devlink.h"
 #include "ecpf.h"
 #include "en/mod_hdr.h"
+#include "en_accel/ipsec.h"
 
 enum {
 	MLX5_ACTION_NONE = 0,
@@ -831,6 +832,8 @@ static int mlx5_esw_vport_caps_get(struct mlx5_eswitch *esw, struct mlx5_vport *
 
 	hca_caps = MLX5_ADDR_OF(query_hca_cap_out, query_ctx, capability);
 	vport->info.mig_enabled = MLX5_GET(cmd_hca_cap_2, hca_caps, migratable);
+
+	err = mlx5_esw_ipsec_vf_offload_get(esw->dev, vport);
 out_free:
 	kfree(query_ctx);
 	return err;
@@ -913,6 +916,9 @@ int mlx5_esw_vport_enable(struct mlx5_eswitch *esw, struct mlx5_vport *vport,
 	/* Sync with current vport context */
 	vport->enabled_events = enabled_events;
 	vport->enabled = true;
+	if (vport->vport != MLX5_VPORT_PF &&
+	    (vport->info.ipsec_crypto_enabled || vport->info.ipsec_packet_enabled))
+		esw->enabled_ipsec_vf_count++;
 
 	/* Esw manager is trusted by default. Host PF (vport 0) is trusted as well
 	 * in smartNIC as it's a vport group manager.
@@ -968,6 +974,10 @@ void mlx5_esw_vport_disable(struct mlx5_eswitch *esw, struct mlx5_vport *vport)
 	if (!mlx5_esw_is_manager_vport(esw, vport_num) &&
 	    MLX5_CAP_GEN(esw->dev, vhca_resource_manager))
 		mlx5_esw_vport_vhca_id_clear(esw, vport_num);
+
+	if (vport->vport != MLX5_VPORT_PF &&
+	    (vport->info.ipsec_crypto_enabled || vport->info.ipsec_packet_enabled))
+		esw->enabled_ipsec_vf_count--;
 
 	/* We don't assume VFs will cleanup after themselves.
 	 * Calling vport change handler while vport is disabled will cleanup
@@ -1266,12 +1276,19 @@ int
 mlx5_eswitch_enable_pf_vf_vports(struct mlx5_eswitch *esw,
 				 enum mlx5_eswitch_vport_event enabled_events)
 {
+	bool pf_needed;
 	int ret;
 
+	pf_needed = mlx5_core_is_ecpf_esw_manager(esw->dev) ||
+		    esw->mode == MLX5_ESWITCH_LEGACY;
+
 	/* Enable PF vport */
-	ret = mlx5_eswitch_load_pf_vf_vport(esw, MLX5_VPORT_PF, enabled_events);
-	if (ret)
-		return ret;
+	if (pf_needed) {
+		ret = mlx5_eswitch_load_pf_vf_vport(esw, MLX5_VPORT_PF,
+						    enabled_events);
+		if (ret)
+			return ret;
+	}
 
 	/* Enable external host PF HCA */
 	ret = host_pf_enable_hca(esw->dev);
@@ -1307,7 +1324,8 @@ ec_vf_err:
 ecpf_err:
 	host_pf_disable_hca(esw->dev);
 pf_hca_err:
-	mlx5_eswitch_unload_pf_vf_vport(esw, MLX5_VPORT_PF);
+	if (pf_needed)
+		mlx5_eswitch_unload_pf_vf_vport(esw, MLX5_VPORT_PF);
 	return ret;
 }
 
@@ -1325,7 +1343,10 @@ void mlx5_eswitch_disable_pf_vf_vports(struct mlx5_eswitch *esw)
 	}
 
 	host_pf_disable_hca(esw->dev);
-	mlx5_eswitch_unload_pf_vf_vport(esw, MLX5_VPORT_PF);
+
+	if (mlx5_core_is_ecpf_esw_manager(esw->dev) ||
+	    esw->mode == MLX5_ESWITCH_LEGACY)
+		mlx5_eswitch_unload_pf_vf_vport(esw, MLX5_VPORT_PF);
 }
 
 static void mlx5_eswitch_get_devlink_param(struct mlx5_eswitch *esw)
@@ -2336,3 +2357,34 @@ struct mlx5_core_dev *mlx5_eswitch_get_core_dev(struct mlx5_eswitch *esw)
 	return mlx5_esw_allowed(esw) ? esw->dev : NULL;
 }
 EXPORT_SYMBOL(mlx5_eswitch_get_core_dev);
+
+bool mlx5_eswitch_block_ipsec(struct mlx5_core_dev *dev)
+{
+	struct mlx5_eswitch *esw = dev->priv.eswitch;
+
+	if (!mlx5_esw_allowed(esw))
+		return true;
+
+	mutex_lock(&esw->state_lock);
+	if (esw->enabled_ipsec_vf_count) {
+		mutex_unlock(&esw->state_lock);
+		return false;
+	}
+
+	dev->num_ipsec_offloads++;
+	mutex_unlock(&esw->state_lock);
+	return true;
+}
+
+void mlx5_eswitch_unblock_ipsec(struct mlx5_core_dev *dev)
+{
+	struct mlx5_eswitch *esw = dev->priv.eswitch;
+
+	if (!mlx5_esw_allowed(esw))
+		/* Failure means no eswitch => core dev is not a PF */
+		return;
+
+	mutex_lock(&esw->state_lock);
+	dev->num_ipsec_offloads--;
+	mutex_unlock(&esw->state_lock);
+}

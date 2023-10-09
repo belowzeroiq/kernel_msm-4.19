@@ -236,6 +236,7 @@ static struct ipv6_devconf ipv6_devconf __read_mostly = {
 	.ioam6_id               = IOAM6_DEFAULT_IF_ID,
 	.ioam6_id_wide		= IOAM6_DEFAULT_IF_ID_WIDE,
 	.ndisc_evict_nocarrier	= 1,
+	.ra_honor_pio_life	= 0,
 };
 
 static struct ipv6_devconf ipv6_devconf_dflt __read_mostly = {
@@ -297,6 +298,7 @@ static struct ipv6_devconf ipv6_devconf_dflt __read_mostly = {
 	.ioam6_id               = IOAM6_DEFAULT_IF_ID,
 	.ioam6_id_wide		= IOAM6_DEFAULT_IF_ID_WIDE,
 	.ndisc_evict_nocarrier	= 1,
+	.ra_honor_pio_life	= 0,
 };
 
 /* Check if link is ready: is it up and is a valid qdisc available */
@@ -1378,7 +1380,7 @@ retry:
 	 * idev->desync_factor if it's larger
 	 */
 	cnf_temp_preferred_lft = READ_ONCE(idev->cnf.temp_prefered_lft);
-	max_desync_factor = min_t(__u32,
+	max_desync_factor = min_t(long,
 				  idev->cnf.max_desync_factor,
 				  cnf_temp_preferred_lft - regen_advance);
 
@@ -2657,22 +2659,23 @@ int addrconf_prefix_rcv_add_addr(struct net *net, struct net_device *dev,
 			stored_lft = ifp->valid_lft - (now - ifp->tstamp) / HZ;
 		else
 			stored_lft = 0;
-		if (!create && stored_lft) {
+
+		/* RFC4862 Section 5.5.3e:
+		 * "Note that the preferred lifetime of the
+		 *  corresponding address is always reset to
+		 *  the Preferred Lifetime in the received
+		 *  Prefix Information option, regardless of
+		 *  whether the valid lifetime is also reset or
+		 *  ignored."
+		 *
+		 * So we should always update prefered_lft here.
+		 */
+		update_lft = !create && stored_lft;
+
+		if (update_lft && !in6_dev->cnf.ra_honor_pio_life) {
 			const u32 minimum_lft = min_t(u32,
 				stored_lft, MIN_VALID_LIFETIME);
 			valid_lft = max(valid_lft, minimum_lft);
-
-			/* RFC4862 Section 5.5.3e:
-			 * "Note that the preferred lifetime of the
-			 *  corresponding address is always reset to
-			 *  the Preferred Lifetime in the received
-			 *  Prefix Information option, regardless of
-			 *  whether the valid lifetime is also reset or
-			 *  ignored."
-			 *
-			 * So we should always update prefered_lft here.
-			 */
-			update_lft = 1;
 		}
 
 		if (update_lft) {
@@ -6846,6 +6849,15 @@ static const struct ctl_table addrconf_sysctl[] = {
 		.mode		= 0644,
 		.proc_handler	= proc_dointvec,
 	},
+	{
+		.procname	= "ra_honor_pio_life",
+		.data		= &ipv6_devconf.ra_honor_pio_life,
+		.maxlen		= sizeof(u8),
+		.mode		= 0644,
+		.proc_handler	= proc_dou8vec_minmax,
+		.extra1		= SYSCTL_ZERO,
+		.extra2		= SYSCTL_ONE,
+	},
 #ifdef CONFIG_IPV6_ROUTER_PREF
 	{
 		.procname	= "accept_ra_rtr_pref",
@@ -7135,7 +7147,8 @@ static int __addrconf_sysctl_register(struct net *net, char *dev_name,
 
 	snprintf(path, sizeof(path), "net/ipv6/conf/%s", dev_name);
 
-	p->sysctl_header = register_net_sysctl(net, path, table);
+	p->sysctl_header = register_net_sysctl_sz(net, path, table,
+						  ARRAY_SIZE(addrconf_sysctl));
 	if (!p->sysctl_header)
 		goto free;
 

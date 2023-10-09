@@ -709,6 +709,7 @@ enum rtw89_regulation_type {
 	RTW89_CN	= 12,
 	RTW89_QATAR	= 13,
 	RTW89_UK	= 14,
+	RTW89_THAILAND	= 15,
 	RTW89_REGD_NUM,
 };
 
@@ -742,36 +743,6 @@ struct rtw89_txpwr_byrate {
 	s8 hedcm[RTW89_OFDMA_NUM][RTW89_NSS_HEDCM_NUM][RTW89_RATE_HEDCM_NUM];
 	s8 offset[__RTW89_RATE_OFFSET_NUM];
 	s8 trap;
-};
-
-enum rtw89_bandwidth_section_num {
-	RTW89_BW20_SEC_NUM = 8,
-	RTW89_BW40_SEC_NUM = 4,
-	RTW89_BW80_SEC_NUM = 2,
-};
-
-#define RTW89_TXPWR_LMT_PAGE_SIZE 40
-
-struct rtw89_txpwr_limit {
-	s8 cck_20m[RTW89_BF_NUM];
-	s8 cck_40m[RTW89_BF_NUM];
-	s8 ofdm[RTW89_BF_NUM];
-	s8 mcs_20m[RTW89_BW20_SEC_NUM][RTW89_BF_NUM];
-	s8 mcs_40m[RTW89_BW40_SEC_NUM][RTW89_BF_NUM];
-	s8 mcs_80m[RTW89_BW80_SEC_NUM][RTW89_BF_NUM];
-	s8 mcs_160m[RTW89_BF_NUM];
-	s8 mcs_40m_0p5[RTW89_BF_NUM];
-	s8 mcs_40m_2p5[RTW89_BF_NUM];
-};
-
-#define RTW89_RU_SEC_NUM 8
-
-#define RTW89_TXPWR_LMT_RU_PAGE_SIZE 24
-
-struct rtw89_txpwr_limit_ru {
-	s8 ru26[RTW89_RU_SEC_NUM];
-	s8 ru52[RTW89_RU_SEC_NUM];
-	s8 ru106[RTW89_RU_SEC_NUM];
 };
 
 struct rtw89_rate_desc {
@@ -3044,6 +3015,8 @@ struct rtw89_vif {
 	bool is_hesta;
 	bool last_a_ctrl;
 	bool dyn_tb_bedge_en;
+	bool pre_pwr_diff_en;
+	bool pwr_diff_en;
 	u8 def_tri_idx;
 	u32 tdls_peer;
 	struct work_struct update_beacon_work;
@@ -3648,7 +3621,8 @@ struct rtw89_chip_info {
 	u8 support_bands;
 	bool support_bw160;
 	bool support_unii4;
-	bool support_ul_tb_ctrl;
+	bool ul_tb_waveform_ctrl;
+	bool ul_tb_pwr_diff;
 	bool hw_sec_hdr;
 	u8 rf_path_num;
 	u8 tx_nss;
@@ -5202,6 +5176,30 @@ enum rtw89_bandwidth nl_to_rtw89_bandwidth(enum nl80211_chan_width width)
 		return RTW89_CHANNEL_WIDTH_80;
 	case NL80211_CHAN_WIDTH_160:
 		return RTW89_CHANNEL_WIDTH_160;
+	}
+}
+
+static inline
+enum nl80211_he_ru_alloc rtw89_he_rua_to_ru_alloc(u16 rua)
+{
+	switch (rua) {
+	default:
+		WARN(1, "Invalid RU allocation: %d\n", rua);
+		fallthrough;
+	case 0 ... 36:
+		return NL80211_RATE_INFO_HE_RU_ALLOC_26;
+	case 37 ... 52:
+		return NL80211_RATE_INFO_HE_RU_ALLOC_52;
+	case 53 ... 60:
+		return NL80211_RATE_INFO_HE_RU_ALLOC_106;
+	case 61 ... 64:
+		return NL80211_RATE_INFO_HE_RU_ALLOC_242;
+	case 65 ... 66:
+		return NL80211_RATE_INFO_HE_RU_ALLOC_484;
+	case 67:
+		return NL80211_RATE_INFO_HE_RU_ALLOC_996;
+	case 68:
+		return NL80211_RATE_INFO_HE_RU_ALLOC_2x996;
 	}
 }
 

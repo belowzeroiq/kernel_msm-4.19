@@ -1519,7 +1519,7 @@ void rtw89_phy_write_reg3_tbl(struct rtw89_dev *rtwdev,
 }
 EXPORT_SYMBOL(rtw89_phy_write_reg3_tbl);
 
-static const u8 rtw89_rs_idx_num[] = {
+static const u8 rtw89_rs_idx_num_ax[] = {
 	[RTW89_RS_CCK] = RTW89_RATE_CCK_NUM,
 	[RTW89_RS_OFDM] = RTW89_RATE_OFDM_NUM,
 	[RTW89_RS_MCS] = RTW89_RATE_MCS_NUM_AX,
@@ -1527,7 +1527,7 @@ static const u8 rtw89_rs_idx_num[] = {
 	[RTW89_RS_OFFSET] = RTW89_RATE_OFFSET_NUM_AX,
 };
 
-static const u8 rtw89_rs_nss_num[] = {
+static const u8 rtw89_rs_nss_num_ax[] = {
 	[RTW89_RS_CCK] = 1,
 	[RTW89_RS_OFDM] = 1,
 	[RTW89_RS_MCS] = RTW89_NSS_NUM,
@@ -1589,7 +1589,6 @@ static s8 rtw89_phy_txpwr_rf_to_mac(struct rtw89_dev *rtwdev, s8 txpwr_rf)
 	return txpwr_rf >> (chip->txpwr_factor_rf - chip->txpwr_factor_mac);
 }
 
-static
 s8 rtw89_phy_read_txpwr_byrate(struct rtw89_dev *rtwdev, u8 band, u8 bw,
 			       const struct rtw89_rate_desc *rate_desc)
 {
@@ -1712,9 +1711,9 @@ EXPORT_SYMBOL(rtw89_phy_read_txpwr_limit);
 							      (ch));	\
 	} while (0)
 
-static void rtw89_phy_fill_txpwr_limit_20m(struct rtw89_dev *rtwdev,
-					   struct rtw89_txpwr_limit *lmt,
-					   u8 band, u8 ntx, u8 ch)
+static void rtw89_phy_fill_txpwr_limit_20m_ax(struct rtw89_dev *rtwdev,
+					      struct rtw89_txpwr_limit_ax *lmt,
+					      u8 band, u8 ntx, u8 ch)
 {
 	__fill_txpwr_limit_nonbf_bf(lmt->cck_20m, band, RTW89_CHANNEL_WIDTH_20,
 				    ntx, RTW89_RS_CCK, ch);
@@ -1727,9 +1726,9 @@ static void rtw89_phy_fill_txpwr_limit_20m(struct rtw89_dev *rtwdev,
 				    ntx, RTW89_RS_MCS, ch);
 }
 
-static void rtw89_phy_fill_txpwr_limit_40m(struct rtw89_dev *rtwdev,
-					   struct rtw89_txpwr_limit *lmt,
-					   u8 band, u8 ntx, u8 ch, u8 pri_ch)
+static void rtw89_phy_fill_txpwr_limit_40m_ax(struct rtw89_dev *rtwdev,
+					      struct rtw89_txpwr_limit_ax *lmt,
+					      u8 band, u8 ntx, u8 ch, u8 pri_ch)
 {
 	__fill_txpwr_limit_nonbf_bf(lmt->cck_20m, band, RTW89_CHANNEL_WIDTH_20,
 				    ntx, RTW89_RS_CCK, ch - 2);
@@ -1748,9 +1747,9 @@ static void rtw89_phy_fill_txpwr_limit_40m(struct rtw89_dev *rtwdev,
 				    ntx, RTW89_RS_MCS, ch);
 }
 
-static void rtw89_phy_fill_txpwr_limit_80m(struct rtw89_dev *rtwdev,
-					   struct rtw89_txpwr_limit *lmt,
-					   u8 band, u8 ntx, u8 ch, u8 pri_ch)
+static void rtw89_phy_fill_txpwr_limit_80m_ax(struct rtw89_dev *rtwdev,
+					      struct rtw89_txpwr_limit_ax *lmt,
+					      u8 band, u8 ntx, u8 ch, u8 pri_ch)
 {
 	s8 val_0p5_n[RTW89_BF_NUM];
 	s8 val_0p5_p[RTW89_BF_NUM];
@@ -1789,9 +1788,9 @@ static void rtw89_phy_fill_txpwr_limit_80m(struct rtw89_dev *rtwdev,
 		lmt->mcs_40m_0p5[i] = min_t(s8, val_0p5_n[i], val_0p5_p[i]);
 }
 
-static void rtw89_phy_fill_txpwr_limit_160m(struct rtw89_dev *rtwdev,
-					    struct rtw89_txpwr_limit *lmt,
-					    u8 band, u8 ntx, u8 ch, u8 pri_ch)
+static void rtw89_phy_fill_txpwr_limit_160m_ax(struct rtw89_dev *rtwdev,
+					       struct rtw89_txpwr_limit_ax *lmt,
+					       u8 band, u8 ntx, u8 ch, u8 pri_ch)
 {
 	s8 val_0p5_n[RTW89_BF_NUM];
 	s8 val_0p5_p[RTW89_BF_NUM];
@@ -1876,10 +1875,10 @@ static void rtw89_phy_fill_txpwr_limit_160m(struct rtw89_dev *rtwdev,
 }
 
 static
-void rtw89_phy_fill_txpwr_limit(struct rtw89_dev *rtwdev,
-				const struct rtw89_chan *chan,
-				struct rtw89_txpwr_limit *lmt,
-				u8 ntx)
+void rtw89_phy_fill_txpwr_limit_ax(struct rtw89_dev *rtwdev,
+				   const struct rtw89_chan *chan,
+				   struct rtw89_txpwr_limit_ax *lmt,
+				   u8 ntx)
 {
 	u8 band = chan->band_type;
 	u8 pri_ch = chan->primary_channel;
@@ -1890,25 +1889,25 @@ void rtw89_phy_fill_txpwr_limit(struct rtw89_dev *rtwdev,
 
 	switch (bw) {
 	case RTW89_CHANNEL_WIDTH_20:
-		rtw89_phy_fill_txpwr_limit_20m(rtwdev, lmt, band, ntx, ch);
+		rtw89_phy_fill_txpwr_limit_20m_ax(rtwdev, lmt, band, ntx, ch);
 		break;
 	case RTW89_CHANNEL_WIDTH_40:
-		rtw89_phy_fill_txpwr_limit_40m(rtwdev, lmt, band, ntx, ch,
-					       pri_ch);
+		rtw89_phy_fill_txpwr_limit_40m_ax(rtwdev, lmt, band, ntx, ch,
+						  pri_ch);
 		break;
 	case RTW89_CHANNEL_WIDTH_80:
-		rtw89_phy_fill_txpwr_limit_80m(rtwdev, lmt, band, ntx, ch,
-					       pri_ch);
+		rtw89_phy_fill_txpwr_limit_80m_ax(rtwdev, lmt, band, ntx, ch,
+						  pri_ch);
 		break;
 	case RTW89_CHANNEL_WIDTH_160:
-		rtw89_phy_fill_txpwr_limit_160m(rtwdev, lmt, band, ntx, ch,
-						pri_ch);
+		rtw89_phy_fill_txpwr_limit_160m_ax(rtwdev, lmt, band, ntx, ch,
+						   pri_ch);
 		break;
 	}
 }
 
-static s8 rtw89_phy_read_txpwr_limit_ru(struct rtw89_dev *rtwdev, u8 band,
-					u8 ru, u8 ntx, u8 ch)
+s8 rtw89_phy_read_txpwr_limit_ru(struct rtw89_dev *rtwdev, u8 band,
+				 u8 ru, u8 ntx, u8 ch)
 {
 	const struct rtw89_rfe_parms *rfe_parms = rtwdev->rfe_parms;
 	const struct rtw89_txpwr_rule_2ghz *rule_2ghz = &rfe_parms->rule_2ghz;
@@ -1958,9 +1957,9 @@ static s8 rtw89_phy_read_txpwr_limit_ru(struct rtw89_dev *rtwdev, u8 band,
 }
 
 static void
-rtw89_phy_fill_txpwr_limit_ru_20m(struct rtw89_dev *rtwdev,
-				  struct rtw89_txpwr_limit_ru *lmt_ru,
-				  u8 band, u8 ntx, u8 ch)
+rtw89_phy_fill_txpwr_limit_ru_20m_ax(struct rtw89_dev *rtwdev,
+				     struct rtw89_txpwr_limit_ru_ax *lmt_ru,
+				     u8 band, u8 ntx, u8 ch)
 {
 	lmt_ru->ru26[0] = rtw89_phy_read_txpwr_limit_ru(rtwdev, band,
 							RTW89_RU26,
@@ -1974,9 +1973,9 @@ rtw89_phy_fill_txpwr_limit_ru_20m(struct rtw89_dev *rtwdev,
 }
 
 static void
-rtw89_phy_fill_txpwr_limit_ru_40m(struct rtw89_dev *rtwdev,
-				  struct rtw89_txpwr_limit_ru *lmt_ru,
-				  u8 band, u8 ntx, u8 ch)
+rtw89_phy_fill_txpwr_limit_ru_40m_ax(struct rtw89_dev *rtwdev,
+				     struct rtw89_txpwr_limit_ru_ax *lmt_ru,
+				     u8 band, u8 ntx, u8 ch)
 {
 	lmt_ru->ru26[0] = rtw89_phy_read_txpwr_limit_ru(rtwdev, band,
 							RTW89_RU26,
@@ -1999,9 +1998,9 @@ rtw89_phy_fill_txpwr_limit_ru_40m(struct rtw89_dev *rtwdev,
 }
 
 static void
-rtw89_phy_fill_txpwr_limit_ru_80m(struct rtw89_dev *rtwdev,
-				  struct rtw89_txpwr_limit_ru *lmt_ru,
-				  u8 band, u8 ntx, u8 ch)
+rtw89_phy_fill_txpwr_limit_ru_80m_ax(struct rtw89_dev *rtwdev,
+				     struct rtw89_txpwr_limit_ru_ax *lmt_ru,
+				     u8 band, u8 ntx, u8 ch)
 {
 	lmt_ru->ru26[0] = rtw89_phy_read_txpwr_limit_ru(rtwdev, band,
 							RTW89_RU26,
@@ -2042,15 +2041,15 @@ rtw89_phy_fill_txpwr_limit_ru_80m(struct rtw89_dev *rtwdev,
 }
 
 static void
-rtw89_phy_fill_txpwr_limit_ru_160m(struct rtw89_dev *rtwdev,
-				   struct rtw89_txpwr_limit_ru *lmt_ru,
-				   u8 band, u8 ntx, u8 ch)
+rtw89_phy_fill_txpwr_limit_ru_160m_ax(struct rtw89_dev *rtwdev,
+				      struct rtw89_txpwr_limit_ru_ax *lmt_ru,
+				      u8 band, u8 ntx, u8 ch)
 {
 	static const int ofst[] = { -14, -10, -6, -2, 2, 6, 10, 14 };
 	int i;
 
-	static_assert(ARRAY_SIZE(ofst) == RTW89_RU_SEC_NUM);
-	for (i = 0; i < RTW89_RU_SEC_NUM; i++) {
+	static_assert(ARRAY_SIZE(ofst) == RTW89_RU_SEC_NUM_AX);
+	for (i = 0; i < RTW89_RU_SEC_NUM_AX; i++) {
 		lmt_ru->ru26[i] = rtw89_phy_read_txpwr_limit_ru(rtwdev, band,
 								RTW89_RU26,
 								ntx,
@@ -2067,10 +2066,10 @@ rtw89_phy_fill_txpwr_limit_ru_160m(struct rtw89_dev *rtwdev,
 }
 
 static
-void rtw89_phy_fill_txpwr_limit_ru(struct rtw89_dev *rtwdev,
-				   const struct rtw89_chan *chan,
-				   struct rtw89_txpwr_limit_ru *lmt_ru,
-				   u8 ntx)
+void rtw89_phy_fill_txpwr_limit_ru_ax(struct rtw89_dev *rtwdev,
+				      const struct rtw89_chan *chan,
+				      struct rtw89_txpwr_limit_ru_ax *lmt_ru,
+				      u8 ntx)
 {
 	u8 band = chan->band_type;
 	u8 ch = chan->channel;
@@ -2080,27 +2079,27 @@ void rtw89_phy_fill_txpwr_limit_ru(struct rtw89_dev *rtwdev,
 
 	switch (bw) {
 	case RTW89_CHANNEL_WIDTH_20:
-		rtw89_phy_fill_txpwr_limit_ru_20m(rtwdev, lmt_ru, band, ntx,
-						  ch);
+		rtw89_phy_fill_txpwr_limit_ru_20m_ax(rtwdev, lmt_ru, band, ntx,
+						     ch);
 		break;
 	case RTW89_CHANNEL_WIDTH_40:
-		rtw89_phy_fill_txpwr_limit_ru_40m(rtwdev, lmt_ru, band, ntx,
-						  ch);
+		rtw89_phy_fill_txpwr_limit_ru_40m_ax(rtwdev, lmt_ru, band, ntx,
+						     ch);
 		break;
 	case RTW89_CHANNEL_WIDTH_80:
-		rtw89_phy_fill_txpwr_limit_ru_80m(rtwdev, lmt_ru, band, ntx,
-						  ch);
+		rtw89_phy_fill_txpwr_limit_ru_80m_ax(rtwdev, lmt_ru, band, ntx,
+						     ch);
 		break;
 	case RTW89_CHANNEL_WIDTH_160:
-		rtw89_phy_fill_txpwr_limit_ru_160m(rtwdev, lmt_ru, band, ntx,
-						   ch);
+		rtw89_phy_fill_txpwr_limit_ru_160m_ax(rtwdev, lmt_ru, band, ntx,
+						      ch);
 		break;
 	}
 }
 
-void rtw89_phy_set_txpwr_byrate(struct rtw89_dev *rtwdev,
-				const struct rtw89_chan *chan,
-				enum rtw89_phy_idx phy_idx)
+static void rtw89_phy_set_txpwr_byrate_ax(struct rtw89_dev *rtwdev,
+					  const struct rtw89_chan *chan,
+					  enum rtw89_phy_idx phy_idx)
 {
 	u8 max_nss_num = rtwdev->chip->rf_path_num;
 	static const u8 rs[] = {
@@ -2119,19 +2118,19 @@ void rtw89_phy_set_txpwr_byrate(struct rtw89_dev *rtwdev,
 	rtw89_debug(rtwdev, RTW89_DBG_TXPWR,
 		    "[TXPWR] set txpwr byrate with ch=%d\n", ch);
 
-	BUILD_BUG_ON(rtw89_rs_idx_num[RTW89_RS_CCK] % 4);
-	BUILD_BUG_ON(rtw89_rs_idx_num[RTW89_RS_OFDM] % 4);
-	BUILD_BUG_ON(rtw89_rs_idx_num[RTW89_RS_MCS] % 4);
-	BUILD_BUG_ON(rtw89_rs_idx_num[RTW89_RS_HEDCM] % 4);
+	BUILD_BUG_ON(rtw89_rs_idx_num_ax[RTW89_RS_CCK] % 4);
+	BUILD_BUG_ON(rtw89_rs_idx_num_ax[RTW89_RS_OFDM] % 4);
+	BUILD_BUG_ON(rtw89_rs_idx_num_ax[RTW89_RS_MCS] % 4);
+	BUILD_BUG_ON(rtw89_rs_idx_num_ax[RTW89_RS_HEDCM] % 4);
 
 	addr = R_AX_PWR_BY_RATE;
 	for (cur.nss = 0; cur.nss < max_nss_num; cur.nss++) {
 		for (i = 0; i < ARRAY_SIZE(rs); i++) {
-			if (cur.nss >= rtw89_rs_nss_num[rs[i]])
+			if (cur.nss >= rtw89_rs_nss_num_ax[rs[i]])
 				continue;
 
 			cur.rs = rs[i];
-			for (cur.idx = 0; cur.idx < rtw89_rs_idx_num[rs[i]];
+			for (cur.idx = 0; cur.idx < rtw89_rs_idx_num_ax[rs[i]];
 			     cur.idx++) {
 				v[cur.idx % 4] =
 					rtw89_phy_read_txpwr_byrate(rtwdev,
@@ -2153,11 +2152,11 @@ void rtw89_phy_set_txpwr_byrate(struct rtw89_dev *rtwdev,
 		}
 	}
 }
-EXPORT_SYMBOL(rtw89_phy_set_txpwr_byrate);
 
-void rtw89_phy_set_txpwr_offset(struct rtw89_dev *rtwdev,
-				const struct rtw89_chan *chan,
-				enum rtw89_phy_idx phy_idx)
+static
+void rtw89_phy_set_txpwr_offset_ax(struct rtw89_dev *rtwdev,
+				   const struct rtw89_chan *chan,
+				   enum rtw89_phy_idx phy_idx)
 {
 	struct rtw89_rate_desc desc = {
 		.nss = RTW89_NSS_1,
@@ -2182,14 +2181,13 @@ void rtw89_phy_set_txpwr_offset(struct rtw89_dev *rtwdev,
 	rtw89_mac_txpwr_write32_mask(rtwdev, phy_idx, R_AX_PWR_RATE_OFST_CTRL,
 				     GENMASK(19, 0), val);
 }
-EXPORT_SYMBOL(rtw89_phy_set_txpwr_offset);
 
-void rtw89_phy_set_txpwr_limit(struct rtw89_dev *rtwdev,
-			       const struct rtw89_chan *chan,
-			       enum rtw89_phy_idx phy_idx)
+static void rtw89_phy_set_txpwr_limit_ax(struct rtw89_dev *rtwdev,
+					 const struct rtw89_chan *chan,
+					 enum rtw89_phy_idx phy_idx)
 {
 	u8 max_ntx_num = rtwdev->chip->rf_path_num;
-	struct rtw89_txpwr_limit lmt;
+	struct rtw89_txpwr_limit_ax lmt;
 	u8 ch = chan->channel;
 	u8 bw = chan->band_width;
 	const s8 *ptr;
@@ -2199,15 +2197,15 @@ void rtw89_phy_set_txpwr_limit(struct rtw89_dev *rtwdev,
 	rtw89_debug(rtwdev, RTW89_DBG_TXPWR,
 		    "[TXPWR] set txpwr limit with ch=%d bw=%d\n", ch, bw);
 
-	BUILD_BUG_ON(sizeof(struct rtw89_txpwr_limit) !=
-		     RTW89_TXPWR_LMT_PAGE_SIZE);
+	BUILD_BUG_ON(sizeof(struct rtw89_txpwr_limit_ax) !=
+		     RTW89_TXPWR_LMT_PAGE_SIZE_AX);
 
 	addr = R_AX_PWR_LMT;
 	for (i = 0; i < max_ntx_num; i++) {
-		rtw89_phy_fill_txpwr_limit(rtwdev, chan, &lmt, i);
+		rtw89_phy_fill_txpwr_limit_ax(rtwdev, chan, &lmt, i);
 
 		ptr = (s8 *)&lmt;
-		for (j = 0; j < RTW89_TXPWR_LMT_PAGE_SIZE;
+		for (j = 0; j < RTW89_TXPWR_LMT_PAGE_SIZE_AX;
 		     j += 4, addr += 4, ptr += 4) {
 			val = FIELD_PREP(GENMASK(7, 0), ptr[0]) |
 			      FIELD_PREP(GENMASK(15, 8), ptr[1]) |
@@ -2218,14 +2216,13 @@ void rtw89_phy_set_txpwr_limit(struct rtw89_dev *rtwdev,
 		}
 	}
 }
-EXPORT_SYMBOL(rtw89_phy_set_txpwr_limit);
 
-void rtw89_phy_set_txpwr_limit_ru(struct rtw89_dev *rtwdev,
-				  const struct rtw89_chan *chan,
-				  enum rtw89_phy_idx phy_idx)
+static void rtw89_phy_set_txpwr_limit_ru_ax(struct rtw89_dev *rtwdev,
+					    const struct rtw89_chan *chan,
+					    enum rtw89_phy_idx phy_idx)
 {
 	u8 max_ntx_num = rtwdev->chip->rf_path_num;
-	struct rtw89_txpwr_limit_ru lmt_ru;
+	struct rtw89_txpwr_limit_ru_ax lmt_ru;
 	u8 ch = chan->channel;
 	u8 bw = chan->band_width;
 	const s8 *ptr;
@@ -2235,15 +2232,15 @@ void rtw89_phy_set_txpwr_limit_ru(struct rtw89_dev *rtwdev,
 	rtw89_debug(rtwdev, RTW89_DBG_TXPWR,
 		    "[TXPWR] set txpwr limit ru with ch=%d bw=%d\n", ch, bw);
 
-	BUILD_BUG_ON(sizeof(struct rtw89_txpwr_limit_ru) !=
-		     RTW89_TXPWR_LMT_RU_PAGE_SIZE);
+	BUILD_BUG_ON(sizeof(struct rtw89_txpwr_limit_ru_ax) !=
+		     RTW89_TXPWR_LMT_RU_PAGE_SIZE_AX);
 
 	addr = R_AX_PWR_RU_LMT;
 	for (i = 0; i < max_ntx_num; i++) {
-		rtw89_phy_fill_txpwr_limit_ru(rtwdev, chan, &lmt_ru, i);
+		rtw89_phy_fill_txpwr_limit_ru_ax(rtwdev, chan, &lmt_ru, i);
 
 		ptr = (s8 *)&lmt_ru;
-		for (j = 0; j < RTW89_TXPWR_LMT_RU_PAGE_SIZE;
+		for (j = 0; j < RTW89_TXPWR_LMT_RU_PAGE_SIZE_AX;
 		     j += 4, addr += 4, ptr += 4) {
 			val = FIELD_PREP(GENMASK(7, 0), ptr[0]) |
 			      FIELD_PREP(GENMASK(15, 8), ptr[1]) |
@@ -2254,7 +2251,6 @@ void rtw89_phy_set_txpwr_limit_ru(struct rtw89_dev *rtwdev,
 		}
 	}
 }
-EXPORT_SYMBOL(rtw89_phy_set_txpwr_limit_ru);
 
 struct rtw89_phy_iter_ra_data {
 	struct rtw89_dev *rtwdev;
@@ -2904,7 +2900,7 @@ void rtw89_phy_ul_tb_assoc(struct rtw89_dev *rtwdev, struct rtw89_vif *rtwvif)
 						       rtwvif->sub_entity_idx);
 	struct rtw89_phy_ul_tb_info *ul_tb_info = &rtwdev->ul_tb_info;
 
-	if (!chip->support_ul_tb_ctrl)
+	if (!chip->ul_tb_waveform_ctrl)
 		return;
 
 	rtwvif->def_tri_idx =
@@ -2934,6 +2930,61 @@ struct rtw89_phy_ul_tb_check_data {
 	u8 def_tri_idx;
 };
 
+struct rtw89_phy_power_diff {
+	u32 q_00;
+	u32 q_11;
+	u32 q_matrix_en;
+	u32 ultb_1t_norm_160;
+	u32 ultb_2t_norm_160;
+	u32 com1_norm_1sts;
+	u32 com2_resp_1sts_path;
+};
+
+static void rtw89_phy_ofdma_power_diff(struct rtw89_dev *rtwdev,
+				       struct rtw89_vif *rtwvif)
+{
+	static const struct rtw89_phy_power_diff table[2] = {
+		{0x0, 0x0, 0x0, 0x0, 0xf4, 0x3, 0x3},
+		{0xb50, 0xb50, 0x1, 0xc, 0x0, 0x1, 0x1},
+	};
+	const struct rtw89_phy_power_diff *param;
+	u32 reg;
+
+	if (!rtwdev->chip->ul_tb_pwr_diff)
+		return;
+
+	if (rtwvif->pwr_diff_en == rtwvif->pre_pwr_diff_en) {
+		rtwvif->pwr_diff_en = false;
+		return;
+	}
+
+	rtwvif->pre_pwr_diff_en = rtwvif->pwr_diff_en;
+	param = &table[rtwvif->pwr_diff_en];
+
+	rtw89_phy_write32_mask(rtwdev, R_Q_MATRIX_00, B_Q_MATRIX_00_REAL,
+			       param->q_00);
+	rtw89_phy_write32_mask(rtwdev, R_Q_MATRIX_11, B_Q_MATRIX_11_REAL,
+			       param->q_11);
+	rtw89_phy_write32_mask(rtwdev, R_CUSTOMIZE_Q_MATRIX,
+			       B_CUSTOMIZE_Q_MATRIX_EN, param->q_matrix_en);
+
+	reg = rtw89_mac_reg_by_idx(rtwdev, R_AX_PWR_UL_TB_1T, rtwvif->mac_idx);
+	rtw89_write32_mask(rtwdev, reg, B_AX_PWR_UL_TB_1T_NORM_BW160,
+			   param->ultb_1t_norm_160);
+
+	reg = rtw89_mac_reg_by_idx(rtwdev, R_AX_PWR_UL_TB_2T, rtwvif->mac_idx);
+	rtw89_write32_mask(rtwdev, reg, B_AX_PWR_UL_TB_2T_NORM_BW160,
+			   param->ultb_2t_norm_160);
+
+	reg = rtw89_mac_reg_by_idx(rtwdev, R_AX_PATH_COM1, rtwvif->mac_idx);
+	rtw89_write32_mask(rtwdev, reg, B_AX_PATH_COM1_NORM_1STS,
+			   param->com1_norm_1sts);
+
+	reg = rtw89_mac_reg_by_idx(rtwdev, R_AX_PATH_COM2, rtwvif->mac_idx);
+	rtw89_write32_mask(rtwdev, reg, B_AX_PATH_COM2_RESP_1STS_PATH,
+			   param->com2_resp_1sts_path);
+}
+
 static
 void rtw89_phy_ul_tb_ctrl_check(struct rtw89_dev *rtwdev,
 				struct rtw89_vif *rtwvif,
@@ -2948,24 +2999,66 @@ void rtw89_phy_ul_tb_ctrl_check(struct rtw89_dev *rtwdev,
 	if (!vif->cfg.assoc)
 		return;
 
-	if (stats->rx_tf_periodic > UL_TB_TF_CNT_L2H_TH)
-		ul_tb_data->high_tf_client = true;
-	else if (stats->rx_tf_periodic < UL_TB_TF_CNT_H2L_TH)
-		ul_tb_data->low_tf_client = true;
+	if (rtwdev->chip->ul_tb_waveform_ctrl) {
+		if (stats->rx_tf_periodic > UL_TB_TF_CNT_L2H_TH)
+			ul_tb_data->high_tf_client = true;
+		else if (stats->rx_tf_periodic < UL_TB_TF_CNT_H2L_TH)
+			ul_tb_data->low_tf_client = true;
 
-	ul_tb_data->valid = true;
-	ul_tb_data->def_tri_idx = rtwvif->def_tri_idx;
-	ul_tb_data->dyn_tb_bedge_en = rtwvif->dyn_tb_bedge_en;
+		ul_tb_data->valid = true;
+		ul_tb_data->def_tri_idx = rtwvif->def_tri_idx;
+		ul_tb_data->dyn_tb_bedge_en = rtwvif->dyn_tb_bedge_en;
+	}
+
+	rtw89_phy_ofdma_power_diff(rtwdev, rtwvif);
+}
+
+static void rtw89_phy_ul_tb_waveform_ctrl(struct rtw89_dev *rtwdev,
+					  struct rtw89_phy_ul_tb_check_data *ul_tb_data)
+{
+	struct rtw89_phy_ul_tb_info *ul_tb_info = &rtwdev->ul_tb_info;
+
+	if (!rtwdev->chip->ul_tb_waveform_ctrl)
+		return;
+
+	if (ul_tb_data->dyn_tb_bedge_en) {
+		if (ul_tb_data->high_tf_client) {
+			rtw89_phy_write32_mask(rtwdev, R_BANDEDGE, B_BANDEDGE_EN, 0);
+			rtw89_debug(rtwdev, RTW89_DBG_UL_TB,
+				    "[ULTB] Turn off if_bandedge\n");
+		} else if (ul_tb_data->low_tf_client) {
+			rtw89_phy_write32_mask(rtwdev, R_BANDEDGE, B_BANDEDGE_EN,
+					       ul_tb_info->def_if_bandedge);
+			rtw89_debug(rtwdev, RTW89_DBG_UL_TB,
+				    "[ULTB] Set to default if_bandedge = %d\n",
+				    ul_tb_info->def_if_bandedge);
+		}
+	}
+
+	if (ul_tb_info->dyn_tb_tri_en) {
+		if (ul_tb_data->high_tf_client) {
+			rtw89_phy_write32_mask(rtwdev, R_DCFO_OPT,
+					       B_TXSHAPE_TRIANGULAR_CFG, 0);
+			rtw89_debug(rtwdev, RTW89_DBG_UL_TB,
+				    "[ULTB] Turn off Tx triangle\n");
+		} else if (ul_tb_data->low_tf_client) {
+			rtw89_phy_write32_mask(rtwdev, R_DCFO_OPT,
+					       B_TXSHAPE_TRIANGULAR_CFG,
+					       ul_tb_data->def_tri_idx);
+			rtw89_debug(rtwdev, RTW89_DBG_UL_TB,
+				    "[ULTB] Set to default tx_shap_idx = %d\n",
+				    ul_tb_data->def_tri_idx);
+		}
+	}
 }
 
 void rtw89_phy_ul_tb_ctrl_track(struct rtw89_dev *rtwdev)
 {
 	const struct rtw89_chip_info *chip = rtwdev->chip;
-	struct rtw89_phy_ul_tb_info *ul_tb_info = &rtwdev->ul_tb_info;
 	struct rtw89_phy_ul_tb_check_data ul_tb_data = {};
 	struct rtw89_vif *rtwvif;
 
-	if (!chip->support_ul_tb_ctrl)
+	if (!chip->ul_tb_waveform_ctrl && !chip->ul_tb_pwr_diff)
 		return;
 
 	if (rtwdev->total_sta_assoc != 1)
@@ -2977,35 +3070,7 @@ void rtw89_phy_ul_tb_ctrl_track(struct rtw89_dev *rtwdev)
 	if (!ul_tb_data.valid)
 		return;
 
-	if (ul_tb_data.dyn_tb_bedge_en) {
-		if (ul_tb_data.high_tf_client) {
-			rtw89_phy_write32_mask(rtwdev, R_BANDEDGE, B_BANDEDGE_EN, 0);
-			rtw89_debug(rtwdev, RTW89_DBG_UL_TB,
-				    "[ULTB] Turn off if_bandedge\n");
-		} else if (ul_tb_data.low_tf_client) {
-			rtw89_phy_write32_mask(rtwdev, R_BANDEDGE, B_BANDEDGE_EN,
-					       ul_tb_info->def_if_bandedge);
-			rtw89_debug(rtwdev, RTW89_DBG_UL_TB,
-				    "[ULTB] Set to default if_bandedge = %d\n",
-				    ul_tb_info->def_if_bandedge);
-		}
-	}
-
-	if (ul_tb_info->dyn_tb_tri_en) {
-		if (ul_tb_data.high_tf_client) {
-			rtw89_phy_write32_mask(rtwdev, R_DCFO_OPT,
-					       B_TXSHAPE_TRIANGULAR_CFG, 0);
-			rtw89_debug(rtwdev, RTW89_DBG_UL_TB,
-				    "[ULTB] Turn off Tx triangle\n");
-		} else if (ul_tb_data.low_tf_client) {
-			rtw89_phy_write32_mask(rtwdev, R_DCFO_OPT,
-					       B_TXSHAPE_TRIANGULAR_CFG,
-					       ul_tb_data.def_tri_idx);
-			rtw89_debug(rtwdev, RTW89_DBG_UL_TB,
-				    "[ULTB] Set to default tx_shap_idx = %d\n",
-				    ul_tb_data.def_tri_idx);
-		}
-	}
+	rtw89_phy_ul_tb_waveform_ctrl(rtwdev, &ul_tb_data);
 }
 
 static void rtw89_phy_ul_tb_info_init(struct rtw89_dev *rtwdev)
@@ -3013,7 +3078,7 @@ static void rtw89_phy_ul_tb_info_init(struct rtw89_dev *rtwdev)
 	const struct rtw89_chip_info *chip = rtwdev->chip;
 	struct rtw89_phy_ul_tb_info *ul_tb_info = &rtwdev->ul_tb_info;
 
-	if (!chip->support_ul_tb_ctrl)
+	if (!chip->ul_tb_waveform_ctrl)
 		return;
 
 	ul_tb_info->dyn_tb_tri_en = true;
@@ -4836,5 +4901,10 @@ const struct rtw89_phy_gen_def rtw89_phy_gen_ax = {
 	.cr_base = 0x10000,
 	.ccx = &rtw89_ccx_regs_ax,
 	.physts = &rtw89_physts_regs_ax,
+
+	.set_txpwr_byrate = rtw89_phy_set_txpwr_byrate_ax,
+	.set_txpwr_offset = rtw89_phy_set_txpwr_offset_ax,
+	.set_txpwr_limit = rtw89_phy_set_txpwr_limit_ax,
+	.set_txpwr_limit_ru = rtw89_phy_set_txpwr_limit_ru_ax,
 };
 EXPORT_SYMBOL(rtw89_phy_gen_ax);

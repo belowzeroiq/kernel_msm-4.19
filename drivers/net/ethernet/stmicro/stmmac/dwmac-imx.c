@@ -70,7 +70,7 @@ static int imx8mp_set_intf_mode(struct plat_stmmacenet_data *plat_dat)
 	struct imx_priv_data *dwmac = plat_dat->bsp_priv;
 	int val;
 
-	switch (plat_dat->interface) {
+	switch (plat_dat->mac_interface) {
 	case PHY_INTERFACE_MODE_MII:
 		val = GPR_ENET_QOS_INTF_SEL_MII;
 		break;
@@ -87,7 +87,7 @@ static int imx8mp_set_intf_mode(struct plat_stmmacenet_data *plat_dat)
 		break;
 	default:
 		pr_debug("imx dwmac doesn't support %d interface\n",
-			 plat_dat->interface);
+			 plat_dat->mac_interface);
 		return -EINVAL;
 	}
 
@@ -110,7 +110,7 @@ static int imx93_set_intf_mode(struct plat_stmmacenet_data *plat_dat)
 	struct imx_priv_data *dwmac = plat_dat->bsp_priv;
 	int val;
 
-	switch (plat_dat->interface) {
+	switch (plat_dat->mac_interface) {
 	case PHY_INTERFACE_MODE_MII:
 		val = MX93_GPR_ENET_QOS_INTF_SEL_MII;
 		break;
@@ -125,7 +125,7 @@ static int imx93_set_intf_mode(struct plat_stmmacenet_data *plat_dat)
 		break;
 	default:
 		dev_dbg(dwmac->dev, "imx dwmac doesn't support %d interface\n",
-			 plat_dat->interface);
+			 plat_dat->mac_interface);
 		return -EINVAL;
 	}
 
@@ -192,8 +192,8 @@ static void imx_dwmac_fix_speed(void *priv, unsigned int speed, unsigned int mod
 	plat_dat = dwmac->plat_dat;
 
 	if (dwmac->ops->mac_rgmii_txclk_auto_adj ||
-	    (plat_dat->interface == PHY_INTERFACE_MODE_RMII) ||
-	    (plat_dat->interface == PHY_INTERFACE_MODE_MII))
+	    (plat_dat->mac_interface == PHY_INTERFACE_MODE_RMII) ||
+	    (plat_dat->mac_interface == PHY_INTERFACE_MODE_MII))
 		return;
 
 	switch (speed) {
@@ -260,7 +260,7 @@ static int imx_dwmac_mx93_reset(void *priv, void __iomem *ioaddr)
 	value |= DMA_BUS_MODE_SFT_RESET;
 	writel(value, ioaddr + DMA_BUS_MODE);
 
-	if (plat_dat->interface == PHY_INTERFACE_MODE_RMII) {
+	if (plat_dat->mac_interface == PHY_INTERFACE_MODE_RMII) {
 		usleep_range(100, 200);
 		writel(RMII_RESET_SPEED, ioaddr + MAC_CTRL_REG);
 	}
@@ -331,15 +331,14 @@ static int imx_dwmac_probe(struct platform_device *pdev)
 	if (!dwmac)
 		return -ENOMEM;
 
-	plat_dat = stmmac_probe_config_dt(pdev, stmmac_res.mac);
+	plat_dat = devm_stmmac_probe_config_dt(pdev, stmmac_res.mac);
 	if (IS_ERR(plat_dat))
 		return PTR_ERR(plat_dat);
 
 	data = of_device_get_match_data(&pdev->dev);
 	if (!data) {
 		dev_err(&pdev->dev, "failed to get match data\n");
-		ret = -EINVAL;
-		goto err_match_data;
+		return -EINVAL;
 	}
 
 	dwmac->ops = data;
@@ -348,7 +347,7 @@ static int imx_dwmac_probe(struct platform_device *pdev)
 	ret = imx_dwmac_parse_dt(dwmac, &pdev->dev);
 	if (ret) {
 		dev_err(&pdev->dev, "failed to parse OF data\n");
-		goto err_parse_dt;
+		return ret;
 	}
 
 	if (data->flags & STMMAC_FLAG_HWTSTAMP_CORRECT_LATENCY)
@@ -365,7 +364,7 @@ static int imx_dwmac_probe(struct platform_device *pdev)
 
 	ret = imx_dwmac_clks_config(dwmac, true);
 	if (ret)
-		goto err_clks_config;
+		return ret;
 
 	ret = imx_dwmac_init(pdev, dwmac);
 	if (ret)
@@ -385,10 +384,6 @@ err_drv_probe:
 	imx_dwmac_exit(pdev, plat_dat->bsp_priv);
 err_dwmac_init:
 	imx_dwmac_clks_config(dwmac, false);
-err_clks_config:
-err_parse_dt:
-err_match_data:
-	stmmac_remove_config_dt(pdev, plat_dat);
 	return ret;
 }
 

@@ -254,12 +254,12 @@ static int dccp_v4_err(struct sk_buff *skb, u32 info)
 	int err;
 	struct net *net = dev_net(skb->dev);
 
-	/* Only need dccph_dport & dccph_sport which are the first
-	 * 4 bytes in dccp header.
-	 * Our caller (icmp_socket_deliver()) already pulled 8 bytes for us.
-	 */
-	BUILD_BUG_ON(offsetofend(struct dccp_hdr, dccph_sport) > 8);
-	BUILD_BUG_ON(offsetofend(struct dccp_hdr, dccph_dport) > 8);
+	if (!pskb_may_pull(skb, offset + sizeof(*dh)))
+		return -EINVAL;
+	dh = (struct dccp_hdr *)(skb->data + offset);
+	if (!pskb_may_pull(skb, offset + __dccp_basic_hdr_len(dh)))
+		return -EINVAL;
+	iph = (struct iphdr *)skb->data;
 	dh = (struct dccp_hdr *)(skb->data + offset);
 
 	sk = __inet_lookup_established(net, &dccp_hashinfo,
@@ -511,7 +511,7 @@ static int dccp_v4_send_response(const struct sock *sk, struct request_sock *req
 		err = ip_build_and_send_pkt(skb, sk, ireq->ir_loc_addr,
 					    ireq->ir_rmt_addr,
 					    rcu_dereference(ireq->ireq_opt),
-					    inet_sk(sk)->tos);
+					    READ_ONCE(inet_sk(sk)->tos));
 		rcu_read_unlock();
 		err = net_xmit_eval(err);
 	}
