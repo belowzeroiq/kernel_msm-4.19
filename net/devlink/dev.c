@@ -4,6 +4,7 @@
  * Copyright (c) 2016 Jiri Pirko <jiri@mellanox.com>
  */
 
+#include <linux/device.h>
 #include <net/genetlink.h>
 #include <net/sock.h>
 #include "devl_internal.h"
@@ -424,6 +425,18 @@ static void devlink_reload_netns_change(struct devlink *devlink,
 	devlink_rel_nested_in_notify(devlink);
 }
 
+static void devlink_reload_reinit_sanity_check(struct devlink *devlink)
+{
+	WARN_ON(!list_empty(&devlink->trap_policer_list));
+	WARN_ON(!list_empty(&devlink->trap_group_list));
+	WARN_ON(!list_empty(&devlink->trap_list));
+	WARN_ON(!list_empty(&devlink->dpipe_table_list));
+	WARN_ON(!list_empty(&devlink->sb_list));
+	WARN_ON(!list_empty(&devlink->rate_list));
+	WARN_ON(!list_empty(&devlink->linecard_list));
+	WARN_ON(!xa_empty(&devlink->ports));
+}
+
 int devlink_reload(struct devlink *devlink, struct net *dest_net,
 		   enum devlink_reload_action action,
 		   enum devlink_reload_limit limit,
@@ -432,6 +445,13 @@ int devlink_reload(struct devlink *devlink, struct net *dest_net,
 	u32 remote_reload_stats[DEVLINK_RELOAD_STATS_ARRAY_SIZE];
 	struct net *curr_net;
 	int err;
+
+	/* Make sure the reload operations are invoked with the device lock
+	 * held to allow drivers to trigger functionality that expects it
+	 * (e.g., PCI reset) and to close possible races between these
+	 * operations and probe/remove.
+	 */
+	device_lock_assert(devlink->dev);
 
 	memcpy(remote_reload_stats, devlink->stats.remote_reload_stats,
 	       sizeof(remote_reload_stats));
@@ -444,8 +464,10 @@ int devlink_reload(struct devlink *devlink, struct net *dest_net,
 	if (dest_net && !net_eq(dest_net, curr_net))
 		devlink_reload_netns_change(devlink, curr_net, dest_net);
 
-	if (action == DEVLINK_RELOAD_ACTION_DRIVER_REINIT)
+	if (action == DEVLINK_RELOAD_ACTION_DRIVER_REINIT) {
 		devlink_params_driverinit_load_new(devlink);
+		devlink_reload_reinit_sanity_check(devlink);
+	}
 
 	err = devlink->ops->reload_up(devlink, action, limit, actions_performed, extack);
 	devlink_reload_failed_set(devlink, !!err);
@@ -492,7 +514,7 @@ free_msg:
 	return -EMSGSIZE;
 }
 
-int devlink_nl_cmd_reload(struct sk_buff *skb, struct genl_info *info)
+int devlink_nl_reload_doit(struct sk_buff *skb, struct genl_info *info)
 {
 	struct devlink *devlink = info->user_ptr[0];
 	enum devlink_reload_action action;
@@ -658,7 +680,7 @@ nla_put_failure:
 	return err;
 }
 
-int devlink_nl_cmd_eswitch_get_doit(struct sk_buff *skb, struct genl_info *info)
+int devlink_nl_eswitch_get_doit(struct sk_buff *skb, struct genl_info *info)
 {
 	struct devlink *devlink = info->user_ptr[0];
 	struct sk_buff *msg;
@@ -679,7 +701,7 @@ int devlink_nl_cmd_eswitch_get_doit(struct sk_buff *skb, struct genl_info *info)
 	return genlmsg_reply(msg, info);
 }
 
-int devlink_nl_cmd_eswitch_set_doit(struct sk_buff *skb, struct genl_info *info)
+int devlink_nl_eswitch_set_doit(struct sk_buff *skb, struct genl_info *info)
 {
 	struct devlink *devlink = info->user_ptr[0];
 	const struct devlink_ops *ops = devlink->ops;
@@ -1108,7 +1130,7 @@ static int devlink_flash_component_get(struct devlink *devlink,
 	return 0;
 }
 
-int devlink_nl_cmd_flash_update(struct sk_buff *skb, struct genl_info *info)
+int devlink_nl_flash_update_doit(struct sk_buff *skb, struct genl_info *info)
 {
 	struct nlattr *nla_overwrite_mask, *nla_file_name;
 	struct devlink_flash_update_params params = {};
@@ -1351,7 +1373,7 @@ static const struct nla_policy devlink_selftest_nl_policy[DEVLINK_ATTR_SELFTEST_
 	[DEVLINK_ATTR_SELFTEST_ID_FLASH] = { .type = NLA_FLAG },
 };
 
-int devlink_nl_cmd_selftests_run(struct sk_buff *skb, struct genl_info *info)
+int devlink_nl_selftests_run_doit(struct sk_buff *skb, struct genl_info *info)
 {
 	struct nlattr *tb[DEVLINK_ATTR_SELFTEST_ID_MAX + 1];
 	struct devlink *devlink = info->user_ptr[0];

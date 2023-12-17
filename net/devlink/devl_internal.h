@@ -3,6 +3,7 @@
  * Copyright (c) 2016 Jiri Pirko <jiri@mellanox.com>
  */
 
+#include <linux/device.h>
 #include <linux/etherdevice.h>
 #include <linux/mutex.h>
 #include <linux/netdevice.h>
@@ -96,6 +97,20 @@ static inline bool devl_is_registered(struct devlink *devlink)
 	return xa_get_mark(&devlinks, devlink->index, DEVLINK_REGISTERED);
 }
 
+static inline void devl_dev_lock(struct devlink *devlink, bool dev_lock)
+{
+	if (dev_lock)
+		device_lock(devlink->dev);
+	devl_lock(devlink);
+}
+
+static inline void devl_dev_unlock(struct devlink *devlink, bool dev_lock)
+{
+	devl_unlock(devlink);
+	if (dev_lock)
+		device_unlock(devlink->dev);
+}
+
 typedef void devlink_rel_notify_cb_t(struct devlink *devlink, u32 obj_index);
 typedef void devlink_rel_cleanup_cb_t(struct devlink *devlink, u32 obj_index,
 				      u32 rel_index);
@@ -111,9 +126,6 @@ int devlink_rel_devlink_handle_put(struct sk_buff *msg, struct devlink *devlink,
 				   bool *msg_updated);
 
 /* Netlink */
-#define DEVLINK_NL_FLAG_NEED_PORT		BIT(0)
-#define DEVLINK_NL_FLAG_NEED_DEVLINK_OR_PORT	BIT(1)
-
 enum devlink_multicast_groups {
 	DEVLINK_MCGRP_CONFIG,
 };
@@ -140,7 +152,8 @@ typedef int devlink_nl_dump_one_func_t(struct sk_buff *msg,
 				       int flags);
 
 struct devlink *
-devlink_get_from_attrs_lock(struct net *net, struct nlattr **attrs);
+devlink_get_from_attrs_lock(struct net *net, struct nlattr **attrs,
+			    bool dev_lock);
 
 int devlink_nl_dumpit(struct sk_buff *msg, struct netlink_callback *cb,
 		      devlink_nl_dump_one_func_t *dump_one);
@@ -227,67 +240,3 @@ int devlink_rate_nodes_check(struct devlink *devlink, u16 mode,
 
 /* Linecards */
 unsigned int devlink_linecard_index(struct devlink_linecard *linecard);
-
-/* Devlink nl cmds */
-int devlink_nl_cmd_reload(struct sk_buff *skb, struct genl_info *info);
-int devlink_nl_cmd_eswitch_get_doit(struct sk_buff *skb, struct genl_info *info);
-int devlink_nl_cmd_eswitch_set_doit(struct sk_buff *skb, struct genl_info *info);
-int devlink_nl_cmd_flash_update(struct sk_buff *skb, struct genl_info *info);
-int devlink_nl_cmd_selftests_run(struct sk_buff *skb, struct genl_info *info);
-int devlink_nl_cmd_port_set_doit(struct sk_buff *skb, struct genl_info *info);
-int devlink_nl_cmd_port_split_doit(struct sk_buff *skb, struct genl_info *info);
-int devlink_nl_cmd_port_unsplit_doit(struct sk_buff *skb,
-				     struct genl_info *info);
-int devlink_nl_cmd_port_new_doit(struct sk_buff *skb, struct genl_info *info);
-int devlink_nl_cmd_port_del_doit(struct sk_buff *skb, struct genl_info *info);
-int devlink_nl_cmd_sb_pool_set_doit(struct sk_buff *skb, struct genl_info *info);
-int devlink_nl_cmd_sb_port_pool_set_doit(struct sk_buff *skb,
-					 struct genl_info *info);
-int devlink_nl_cmd_sb_tc_pool_bind_set_doit(struct sk_buff *skb,
-					    struct genl_info *info);
-int devlink_nl_cmd_sb_occ_snapshot_doit(struct sk_buff *skb,
-					struct genl_info *info);
-int devlink_nl_cmd_sb_occ_max_clear_doit(struct sk_buff *skb,
-					 struct genl_info *info);
-int devlink_nl_cmd_dpipe_table_get(struct sk_buff *skb, struct genl_info *info);
-int devlink_nl_cmd_dpipe_entries_get(struct sk_buff *skb,
-				     struct genl_info *info);
-int devlink_nl_cmd_dpipe_headers_get(struct sk_buff *skb,
-				     struct genl_info *info);
-int devlink_nl_cmd_dpipe_table_counters_set(struct sk_buff *skb,
-					    struct genl_info *info);
-int devlink_nl_cmd_resource_set(struct sk_buff *skb, struct genl_info *info);
-int devlink_nl_cmd_resource_dump(struct sk_buff *skb, struct genl_info *info);
-int devlink_nl_cmd_param_set_doit(struct sk_buff *skb, struct genl_info *info);
-int devlink_nl_cmd_port_param_get_dumpit(struct sk_buff *msg,
-					 struct netlink_callback *cb);
-int devlink_nl_cmd_port_param_get_doit(struct sk_buff *skb,
-				       struct genl_info *info);
-int devlink_nl_cmd_port_param_set_doit(struct sk_buff *skb,
-				       struct genl_info *info);
-int devlink_nl_cmd_region_new(struct sk_buff *skb, struct genl_info *info);
-int devlink_nl_cmd_region_del(struct sk_buff *skb, struct genl_info *info);
-int devlink_nl_cmd_region_read_dumpit(struct sk_buff *skb,
-				      struct netlink_callback *cb);
-int devlink_nl_cmd_health_reporter_set_doit(struct sk_buff *skb,
-					    struct genl_info *info);
-int devlink_nl_cmd_health_reporter_recover_doit(struct sk_buff *skb,
-						struct genl_info *info);
-int devlink_nl_cmd_health_reporter_diagnose_doit(struct sk_buff *skb,
-						 struct genl_info *info);
-int devlink_nl_cmd_health_reporter_dump_get_dumpit(struct sk_buff *skb,
-						   struct netlink_callback *cb);
-int devlink_nl_cmd_health_reporter_dump_clear_doit(struct sk_buff *skb,
-						   struct genl_info *info);
-int devlink_nl_cmd_health_reporter_test_doit(struct sk_buff *skb,
-					     struct genl_info *info);
-int devlink_nl_cmd_trap_set_doit(struct sk_buff *skb, struct genl_info *info);
-int devlink_nl_cmd_trap_group_set_doit(struct sk_buff *skb,
-				       struct genl_info *info);
-int devlink_nl_cmd_trap_policer_set_doit(struct sk_buff *skb,
-					 struct genl_info *info);
-int devlink_nl_cmd_rate_set_doit(struct sk_buff *skb, struct genl_info *info);
-int devlink_nl_cmd_rate_new_doit(struct sk_buff *skb, struct genl_info *info);
-int devlink_nl_cmd_rate_del_doit(struct sk_buff *skb, struct genl_info *info);
-int devlink_nl_cmd_linecard_set_doit(struct sk_buff *skb,
-				     struct genl_info *info);

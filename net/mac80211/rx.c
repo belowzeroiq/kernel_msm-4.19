@@ -920,7 +920,7 @@ static void ieee80211_parse_qos(struct ieee80211_rx_data *rx)
  * Drivers always need to pass packets that are aligned to two-byte boundaries
  * to the stack.
  *
- * Additionally, should, if possible, align the payload data in a way that
+ * Additionally, they should, if possible, align the payload data in a way that
  * guarantees that the contained IP header is aligned to a four-byte
  * boundary. In the case of regular frames, this simply means aligning the
  * payload to a four-byte boundary (because either the IP header is directly
@@ -936,7 +936,7 @@ static void ieee80211_parse_qos(struct ieee80211_rx_data *rx)
  * subframe to a length that is a multiple of four.
  *
  * Padding like Atheros hardware adds which is between the 802.11 header and
- * the payload is not supported, the driver is required to move the 802.11
+ * the payload is not supported; the driver is required to move the 802.11
  * header to be directly in front of the payload in that case.
  */
 static void ieee80211_verify_alignment(struct ieee80211_rx_data *rx)
@@ -2469,8 +2469,7 @@ ieee80211_drop_unencrypted_mgmt(struct ieee80211_rx_data *rx)
 
 		/* drop unicast public action frames when using MPF */
 		if (is_unicast_ether_addr(mgmt->da) &&
-		    ieee80211_is_public_action((void *)rx->skb->data,
-					       rx->skb->len))
+		    ieee80211_is_protected_dual_of_public_action(rx->skb))
 			return RX_DROP_U_UNPROT_UNICAST_PUB_ACTION;
 	}
 

@@ -522,11 +522,18 @@ enum ice_misc_thread_tasks {
 	ICE_MISC_THREAD_NBITS		/* must be last */
 };
 
-struct ice_switchdev_info {
+struct ice_eswitch {
 	struct ice_vsi *control_vsi;
 	struct ice_vsi *uplink_vsi;
 	struct ice_esw_br_offloads *br_offloads;
+	struct xarray reprs;
 	bool is_running;
+	/* struct to allow cp queues management optimization */
+	struct {
+		int to_reach;
+		int value;
+		bool is_reaching;
+	} qs;
 };
 
 struct ice_agg_node {
@@ -554,6 +561,8 @@ struct ice_pf {
 	 * MSIX vectors allowed on this PF.
 	 */
 	u16 sriov_base_vector;
+	unsigned long *sriov_irq_bm;	/* bitmap to track irq usage */
+	u16 sriov_irq_size;		/* size of the irq_bm bitmap */
 
 	u16 ctrl_vsi_idx;		/* control VSI index in pf->vsi array */
 
@@ -635,7 +644,7 @@ struct ice_pf {
 	struct ice_link_default_override_tlv link_dflt_override;
 	struct ice_lag *lag; /* Link Aggregation information */
 
-	struct ice_switchdev_info switchdev;
+	struct ice_eswitch eswitch;
 	struct ice_esw_br_port *br_port;
 
 #define ICE_INVALID_AGG_NODE_ID		0
@@ -844,7 +853,7 @@ static inline struct ice_vsi *ice_find_vsi(struct ice_pf *pf, u16 vsi_num)
  */
 static inline bool ice_is_switchdev_running(struct ice_pf *pf)
 {
-	return pf->switchdev.is_running;
+	return pf->eswitch.is_running;
 }
 
 #define ICE_FD_STAT_CTR_BLOCK_COUNT	256
@@ -960,6 +969,7 @@ int ice_stop(struct net_device *netdev);
 void ice_service_task_schedule(struct ice_pf *pf);
 int ice_load(struct ice_pf *pf);
 void ice_unload(struct ice_pf *pf);
+void ice_adv_lnk_speed_maps_init(void);
 
 /**
  * ice_set_rdma_cap - enable RDMA support

@@ -55,6 +55,7 @@ Contents:
    filter
    generic-hdlc
    generic_netlink
+   netlink_spec/index
    gen_stats
    gtp
    ila
@@ -106,6 +107,7 @@ Contents:
    sysfs-tagging
    tc-actions-env-rules
    tc-queue-filters
+   tcp_ao
    tcp-thin
    team
    timestamping

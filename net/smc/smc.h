@@ -196,7 +196,6 @@ struct smc_connection {
 						 * - dec on polled tx cqe
 						 */
 	wait_queue_head_t	cdc_pend_tx_wq; /* wakeup on no cdc_pend_tx_wr*/
-	atomic_t		tx_pushing;     /* nr_threads trying tx push */
 	struct delayed_work	tx_work;	/* retry of smc_cdc_msg_send */
 	u32			tx_off;		/* base offset in peer rmb */
 
@@ -376,5 +375,10 @@ void smc_fill_gid_list(struct smc_link_group *lgr,
 int smc_nl_dump_hs_limitation(struct sk_buff *skb, struct netlink_callback *cb);
 int smc_nl_enable_hs_limitation(struct sk_buff *skb, struct genl_info *info);
 int smc_nl_disable_hs_limitation(struct sk_buff *skb, struct genl_info *info);
+
+static inline void smc_sock_set_flag(struct sock *sk, enum sock_flags flag)
+{
+	set_bit(flag, &sk->sk_flags);
+}
 
 #endif	/* __SMC_H */

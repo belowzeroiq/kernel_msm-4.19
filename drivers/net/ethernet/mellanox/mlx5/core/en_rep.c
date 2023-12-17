@@ -71,13 +71,17 @@ static void mlx5e_rep_get_drvinfo(struct net_device *dev,
 {
 	struct mlx5e_priv *priv = netdev_priv(dev);
 	struct mlx5_core_dev *mdev = priv->mdev;
+	int count;
 
 	strscpy(drvinfo->driver, mlx5e_rep_driver_name,
 		sizeof(drvinfo->driver));
-	snprintf(drvinfo->fw_version, sizeof(drvinfo->fw_version),
-		 "%d.%d.%04d (%.16s)",
-		 fw_rev_maj(mdev), fw_rev_min(mdev),
-		 fw_rev_sub(mdev), mdev->board_id);
+	count = snprintf(drvinfo->fw_version, sizeof(drvinfo->fw_version),
+			 "%d.%d.%04d (%.16s)", fw_rev_maj(mdev),
+			 fw_rev_min(mdev), fw_rev_sub(mdev), mdev->board_id);
+	if (count == sizeof(drvinfo->fw_version))
+		snprintf(drvinfo->fw_version, sizeof(drvinfo->fw_version),
+			 "%d.%d.%04d", fw_rev_maj(mdev),
+			 fw_rev_min(mdev), fw_rev_sub(mdev));
 }
 
 static const struct counter_desc sw_rep_stats_desc[] = {
@@ -108,8 +112,18 @@ static const struct counter_desc vport_rep_stats_desc[] = {
 			     tx_vport_rdma_multicast_bytes) },
 };
 
+static const struct counter_desc vport_rep_loopback_stats_desc[] = {
+	{ MLX5E_DECLARE_STAT(struct mlx5e_rep_stats,
+			     vport_loopback_packets) },
+	{ MLX5E_DECLARE_STAT(struct mlx5e_rep_stats,
+			     vport_loopback_bytes) },
+};
+
 #define NUM_VPORT_REP_SW_COUNTERS ARRAY_SIZE(sw_rep_stats_desc)
 #define NUM_VPORT_REP_HW_COUNTERS ARRAY_SIZE(vport_rep_stats_desc)
+#define NUM_VPORT_REP_LOOPBACK_COUNTERS(dev) \
+	(MLX5_CAP_GEN(dev, vport_counter_local_loopback) ? \
+	 ARRAY_SIZE(vport_rep_loopback_stats_desc) : 0)
 
 static MLX5E_DECLARE_STATS_GRP_OP_NUM_STATS(sw_rep)
 {
@@ -153,7 +167,8 @@ static MLX5E_DECLARE_STATS_GRP_OP_UPDATE_STATS(sw_rep)
 
 static MLX5E_DECLARE_STATS_GRP_OP_NUM_STATS(vport_rep)
 {
-	return NUM_VPORT_REP_HW_COUNTERS;
+	return NUM_VPORT_REP_HW_COUNTERS +
+	       NUM_VPORT_REP_LOOPBACK_COUNTERS(priv->mdev);
 }
 
 static MLX5E_DECLARE_STATS_GRP_OP_FILL_STRS(vport_rep)
@@ -162,6 +177,9 @@ static MLX5E_DECLARE_STATS_GRP_OP_FILL_STRS(vport_rep)
 
 	for (i = 0; i < NUM_VPORT_REP_HW_COUNTERS; i++)
 		strcpy(data + (idx++) * ETH_GSTRING_LEN, vport_rep_stats_desc[i].format);
+	for (i = 0; i < NUM_VPORT_REP_LOOPBACK_COUNTERS(priv->mdev); i++)
+		strcpy(data + (idx++) * ETH_GSTRING_LEN,
+		       vport_rep_loopback_stats_desc[i].format);
 	return idx;
 }
 
@@ -172,6 +190,9 @@ static MLX5E_DECLARE_STATS_GRP_OP_FILL_STATS(vport_rep)
 	for (i = 0; i < NUM_VPORT_REP_HW_COUNTERS; i++)
 		data[idx++] = MLX5E_READ_CTR64_CPU(&priv->stats.rep_stats,
 						   vport_rep_stats_desc, i);
+	for (i = 0; i < NUM_VPORT_REP_LOOPBACK_COUNTERS(priv->mdev); i++)
+		data[idx++] = MLX5E_READ_CTR64_CPU(&priv->stats.rep_stats,
+						   vport_rep_loopback_stats_desc, i);
 	return idx;
 }
 
@@ -242,6 +263,13 @@ static MLX5E_DECLARE_STATS_GRP_OP_UPDATE_STATS(vport_rep)
 		MLX5_GET_CTR(out, transmitted_ib_multicast.octets);
 	rep_stats->tx_vport_rdma_multicast_bytes =
 		MLX5_GET_CTR(out, received_ib_multicast.octets);
+
+	if (MLX5_CAP_GEN(priv->mdev, vport_counter_local_loopback)) {
+		rep_stats->vport_loopback_packets =
+			MLX5_GET_CTR(out, local_loopback.packets);
+		rep_stats->vport_loopback_bytes =
+			MLX5_GET_CTR(out, local_loopback.octets);
+	}
 
 out:
 	kvfree(out);
@@ -701,7 +729,7 @@ mlx5e_rep_get_stats(struct net_device *dev, struct rtnl_link_stats64 *stats)
 
 	/* update HW stats in background for next time */
 	mlx5e_queue_update_stats(priv);
-	memcpy(stats, &priv->stats.vf_vport, sizeof(*stats));
+	mlx5e_stats_copy_rep_stats(stats, &priv->stats.rep_stats);
 }
 
 static int mlx5e_rep_change_mtu(struct net_device *netdev, int new_mtu)
@@ -769,6 +797,7 @@ static int mlx5e_rep_max_nch_limit(struct mlx5_core_dev *mdev)
 
 static void mlx5e_build_rep_params(struct net_device *netdev)
 {
+	const bool take_rtnl = netdev->reg_state == NETREG_REGISTERED;
 	struct mlx5e_priv *priv = netdev_priv(netdev);
 	struct mlx5e_rep_priv *rpriv = priv->ppriv;
 	struct mlx5_eswitch_rep *rep = rpriv->rep;
@@ -794,8 +823,15 @@ static void mlx5e_build_rep_params(struct net_device *netdev)
 	/* RQ */
 	mlx5e_build_rq_params(mdev, params);
 
+	/* If netdev is already registered (e.g. move from nic profile to uplink,
+	 * RTNL lock must be held before triggering netdev notifiers.
+	 */
+	if (take_rtnl)
+		rtnl_lock();
 	/* update XDP supported features */
 	mlx5e_set_xdp_feature(netdev);
+	if (take_rtnl)
+		rtnl_unlock();
 
 	/* CQ moderation params */
 	params->rx_dim_enabled = MLX5_CAP_GEN(mdev, cq_moderation);
@@ -1348,8 +1384,9 @@ mlx5e_rep_vnic_reporter_diagnose(struct devlink_health_reporter *reporter,
 	struct mlx5e_rep_priv *rpriv = devlink_health_reporter_priv(reporter);
 	struct mlx5_eswitch_rep *rep = rpriv->rep;
 
-	return mlx5_reporter_vnic_diagnose_counters(rep->esw->dev, fmsg,
-						    rep->vport, true);
+	mlx5_reporter_vnic_diagnose_counters(rep->esw->dev, fmsg, rep->vport,
+					     true);
+	return 0;
 }
 
 static const struct devlink_health_reporter_ops mlx5_rep_vnic_reporter_ops = {

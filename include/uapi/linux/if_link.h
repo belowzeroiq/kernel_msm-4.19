@@ -758,6 +758,30 @@ struct tunnel_msg {
 	__u32 ifindex;
 };
 
+/* netkit section */
+enum netkit_action {
+	NETKIT_NEXT	= -1,
+	NETKIT_PASS	= 0,
+	NETKIT_DROP	= 2,
+	NETKIT_REDIRECT	= 7,
+};
+
+enum netkit_mode {
+	NETKIT_L2,
+	NETKIT_L3,
+};
+
+enum {
+	IFLA_NETKIT_UNSPEC,
+	IFLA_NETKIT_PEER_INFO,
+	IFLA_NETKIT_PRIMARY,
+	IFLA_NETKIT_POLICY,
+	IFLA_NETKIT_PEER_POLICY,
+	IFLA_NETKIT_MODE,
+	__IFLA_NETKIT_MAX,
+};
+#define IFLA_NETKIT_MAX	(__IFLA_NETKIT_MAX - 1)
+
 /* VXLAN section */
 
 /* include statistics in the dump */
@@ -832,6 +856,7 @@ enum {
 	IFLA_VXLAN_DF,
 	IFLA_VXLAN_VNIFILTER, /* only applicable with COLLECT_METADATA mode */
 	IFLA_VXLAN_LOCALBYPASS,
+	IFLA_VXLAN_LABEL_POLICY, /* IPv6 flow label policy; ifla_vxlan_label_policy */
 	__IFLA_VXLAN_MAX
 };
 #define IFLA_VXLAN_MAX	(__IFLA_VXLAN_MAX - 1)
@@ -847,6 +872,13 @@ enum ifla_vxlan_df {
 	VXLAN_DF_INHERIT,
 	__VXLAN_DF_END,
 	VXLAN_DF_MAX = __VXLAN_DF_END - 1,
+};
+
+enum ifla_vxlan_label_policy {
+	VXLAN_LABEL_FIXED = 0,
+	VXLAN_LABEL_INHERIT = 1,
+	__VXLAN_LABEL_END,
+	VXLAN_LABEL_MAX = __VXLAN_LABEL_END - 1,
 };
 
 /* GENEVE section */
@@ -1394,7 +1426,9 @@ enum {
 
 enum {
 	IFLA_DSA_UNSPEC,
-	IFLA_DSA_MASTER,
+	IFLA_DSA_CONDUIT,
+	/* Deprecated, use IFLA_DSA_CONDUIT instead */
+	IFLA_DSA_MASTER = IFLA_DSA_CONDUIT,
 	__IFLA_DSA_MAX,
 };
 

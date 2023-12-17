@@ -1197,6 +1197,17 @@ static int stmmac_init_phy(struct net_device *dev)
 	return ret;
 }
 
+static void stmmac_set_half_duplex(struct stmmac_priv *priv)
+{
+	/* Half-Duplex can only work with single tx queue */
+	if (priv->plat->tx_queues_to_use > 1)
+		priv->phylink_config.mac_capabilities &=
+			~(MAC_10HD | MAC_100HD | MAC_1000HD);
+	else
+		priv->phylink_config.mac_capabilities |=
+			(MAC_10HD | MAC_100HD | MAC_1000HD);
+}
+
 static int stmmac_phy_setup(struct stmmac_priv *priv)
 {
 	struct stmmac_mdio_bus_data *mdio_bus_data;
@@ -1228,10 +1239,7 @@ static int stmmac_phy_setup(struct stmmac_priv *priv)
 						MAC_10FD | MAC_100FD |
 						MAC_1000FD;
 
-	/* Half-Duplex can only work with single queue */
-	if (priv->plat->tx_queues_to_use <= 1)
-		priv->phylink_config.mac_capabilities |= MAC_10HD | MAC_100HD |
-							 MAC_1000HD;
+	stmmac_set_half_duplex(priv);
 
 	/* Get the MAC specific capabilities */
 	stmmac_mac_phylink_get_caps(priv);
@@ -2543,9 +2551,13 @@ static void stmmac_bump_dma_threshold(struct stmmac_priv *priv, u32 chan)
  * @priv: driver private structure
  * @budget: napi budget limiting this functions packet handling
  * @queue: TX queue index
+ * @pending_packets: signal to arm the TX coal timer
  * Description: it reclaims the transmit resources after transmission completes.
+ * If some packets still needs to be handled, due to TX coalesce, set
+ * pending_packets to true to make NAPI arm the TX coal timer.
  */
-static int stmmac_tx_clean(struct stmmac_priv *priv, int budget, u32 queue)
+static int stmmac_tx_clean(struct stmmac_priv *priv, int budget, u32 queue,
+			   bool *pending_packets)
 {
 	struct stmmac_tx_queue *tx_q = &priv->dma_conf.tx_queue[queue];
 	struct stmmac_txq_stats *txq_stats = &priv->xstats.txq_stats[queue];
@@ -2706,7 +2718,7 @@ static int stmmac_tx_clean(struct stmmac_priv *priv, int budget, u32 queue)
 
 	/* We still have pending packets, let's call for a new scheduling */
 	if (tx_q->dirty_tx != tx_q->cur_tx)
-		stmmac_tx_timer_arm(priv, queue);
+		*pending_packets = true;
 
 	flags = u64_stats_update_begin_irqsave(&txq_stats->syncp);
 	txq_stats->tx_packets += tx_packets;
@@ -2996,13 +3008,25 @@ static void stmmac_tx_timer_arm(struct stmmac_priv *priv, u32 queue)
 {
 	struct stmmac_tx_queue *tx_q = &priv->dma_conf.tx_queue[queue];
 	u32 tx_coal_timer = priv->tx_coal_timer[queue];
+	struct stmmac_channel *ch;
+	struct napi_struct *napi;
 
 	if (!tx_coal_timer)
 		return;
 
-	hrtimer_start(&tx_q->txtimer,
-		      STMMAC_COAL_TIMER(tx_coal_timer),
-		      HRTIMER_MODE_REL);
+	ch = &priv->channel[tx_q->queue_index];
+	napi = tx_q->xsk_pool ? &ch->rxtx_napi : &ch->tx_napi;
+
+	/* Arm timer only if napi is not already scheduled.
+	 * Try to cancel any timer if napi is scheduled, timer will be armed
+	 * again in the next scheduled napi.
+	 */
+	if (unlikely(!napi_is_scheduled(napi)))
+		hrtimer_start(&tx_q->txtimer,
+			      STMMAC_COAL_TIMER(tx_coal_timer),
+			      HRTIMER_MODE_REL);
+	else
+		hrtimer_try_to_cancel(&tx_q->txtimer);
 }
 
 /**
@@ -3444,6 +3468,8 @@ static int stmmac_hw_setup(struct net_device *dev, bool ptp_register)
 
 	/* Start the ball rolling... */
 	stmmac_start_all_dma(priv);
+
+	stmmac_set_hw_vlan_mode(priv, priv->hw);
 
 	if (priv->dma_cap.fpesel) {
 		stmmac_fpe_start_wq(priv);
@@ -4969,7 +4995,12 @@ static void stmmac_dispatch_skb_zc(struct stmmac_priv *priv, u32 queue,
 	}
 
 	stmmac_get_rx_hwtstamp(priv, p, np, skb);
-	stmmac_rx_vlan(priv->dev, skb);
+	if (priv->hw->hw_vlan_en)
+		/* MAC level stripping. */
+		stmmac_rx_hw_vlan(priv, priv->hw, p, skb);
+	else
+		/* Driver level stripping. */
+		stmmac_rx_vlan(priv->dev, skb);
 	skb->protocol = eth_type_trans(skb, priv->dev);
 
 	if (unlikely(!coe))
@@ -5269,6 +5300,7 @@ static int stmmac_rx(struct stmmac_priv *priv, int limit, u32 queue)
 
 	dma_dir = page_pool_get_dma_dir(rx_q->page_pool);
 	buf_sz = DIV_ROUND_UP(priv->dma_conf.dma_buf_sz, PAGE_SIZE) * PAGE_SIZE;
+	limit = min(priv->dma_conf.dma_rx_size - 1, (unsigned int)limit);
 
 	if (netif_msg_rx_status(priv)) {
 		void *rx_head;
@@ -5304,10 +5336,10 @@ static int stmmac_rx(struct stmmac_priv *priv, int limit, u32 queue)
 			len = 0;
 		}
 
+read_again:
 		if (count >= limit)
 			break;
 
-read_again:
 		buf1_len = 0;
 		buf2_len = 0;
 		entry = next_entry;
@@ -5484,7 +5516,14 @@ drain_data:
 		/* Got entire packet into SKB. Finish it. */
 
 		stmmac_get_rx_hwtstamp(priv, p, np, skb);
-		stmmac_rx_vlan(priv->dev, skb);
+
+		if (priv->hw->hw_vlan_en)
+			/* MAC level stripping. */
+			stmmac_rx_hw_vlan(priv, priv->hw, p, skb);
+		else
+			/* Driver level stripping. */
+			stmmac_rx_vlan(priv->dev, skb);
+
 		skb->protocol = eth_type_trans(skb, priv->dev);
 
 		if (unlikely(!coe))
@@ -5560,6 +5599,7 @@ static int stmmac_napi_poll_tx(struct napi_struct *napi, int budget)
 		container_of(napi, struct stmmac_channel, tx_napi);
 	struct stmmac_priv *priv = ch->priv_data;
 	struct stmmac_txq_stats *txq_stats;
+	bool pending_packets = false;
 	u32 chan = ch->index;
 	unsigned long flags;
 	int work_done;
@@ -5569,7 +5609,7 @@ static int stmmac_napi_poll_tx(struct napi_struct *napi, int budget)
 	txq_stats->napi_poll++;
 	u64_stats_update_end_irqrestore(&txq_stats->syncp, flags);
 
-	work_done = stmmac_tx_clean(priv, budget, chan);
+	work_done = stmmac_tx_clean(priv, budget, chan, &pending_packets);
 	work_done = min(work_done, budget);
 
 	if (work_done < budget && napi_complete_done(napi, work_done)) {
@@ -5580,6 +5620,10 @@ static int stmmac_napi_poll_tx(struct napi_struct *napi, int budget)
 		spin_unlock_irqrestore(&ch->lock, flags);
 	}
 
+	/* TX still have packet to handle, check if we need to arm tx timer */
+	if (pending_packets)
+		stmmac_tx_timer_arm(priv, chan);
+
 	return work_done;
 }
 
@@ -5588,6 +5632,7 @@ static int stmmac_napi_poll_rxtx(struct napi_struct *napi, int budget)
 	struct stmmac_channel *ch =
 		container_of(napi, struct stmmac_channel, rxtx_napi);
 	struct stmmac_priv *priv = ch->priv_data;
+	bool tx_pending_packets = false;
 	int rx_done, tx_done, rxtx_done;
 	struct stmmac_rxq_stats *rxq_stats;
 	struct stmmac_txq_stats *txq_stats;
@@ -5604,7 +5649,7 @@ static int stmmac_napi_poll_rxtx(struct napi_struct *napi, int budget)
 	txq_stats->napi_poll++;
 	u64_stats_update_end_irqrestore(&txq_stats->syncp, flags);
 
-	tx_done = stmmac_tx_clean(priv, budget, chan);
+	tx_done = stmmac_tx_clean(priv, budget, chan, &tx_pending_packets);
 	tx_done = min(tx_done, budget);
 
 	rx_done = stmmac_rx_zc(priv, budget, chan);
@@ -5628,6 +5673,10 @@ static int stmmac_napi_poll_rxtx(struct napi_struct *napi, int budget)
 		stmmac_enable_dma_irq(priv, priv->ioaddr, chan, 1, 1);
 		spin_unlock_irqrestore(&ch->lock, flags);
 	}
+
+	/* TX still have packet to handle, check if we need to arm tx timer */
+	if (tx_pending_packets)
+		stmmac_tx_timer_arm(priv, chan);
 
 	return min(rxtx_done, budget - 1);
 }
@@ -5782,6 +5831,13 @@ static int stmmac_set_features(struct net_device *netdev,
 		for (chan = 0; chan < priv->plat->rx_queues_to_use; chan++)
 			stmmac_enable_sph(priv, priv->ioaddr, sph_en, chan);
 	}
+
+	if (features & NETIF_F_HW_VLAN_CTAG_RX)
+		priv->hw->hw_vlan_en = true;
+	else
+		priv->hw->hw_vlan_en = false;
+
+	stmmac_set_hw_vlan_mode(priv, priv->hw);
 
 	return 0;
 }
@@ -6145,30 +6201,23 @@ static struct dentry *stmmac_fs_dir;
 static void sysfs_display_ring(void *head, int size, int extend_desc,
 			       struct seq_file *seq, dma_addr_t dma_phy_addr)
 {
-	int i;
 	struct dma_extended_desc *ep = (struct dma_extended_desc *)head;
 	struct dma_desc *p = (struct dma_desc *)head;
+	unsigned int desc_size;
 	dma_addr_t dma_addr;
+	int i;
 
+	desc_size = extend_desc ? sizeof(*ep) : sizeof(*p);
 	for (i = 0; i < size; i++) {
-		if (extend_desc) {
-			dma_addr = dma_phy_addr + i * sizeof(*ep);
-			seq_printf(seq, "%d [%pad]: 0x%x 0x%x 0x%x 0x%x\n",
-				   i, &dma_addr,
-				   le32_to_cpu(ep->basic.des0),
-				   le32_to_cpu(ep->basic.des1),
-				   le32_to_cpu(ep->basic.des2),
-				   le32_to_cpu(ep->basic.des3));
-			ep++;
-		} else {
-			dma_addr = dma_phy_addr + i * sizeof(*p);
-			seq_printf(seq, "%d [%pad]: 0x%x 0x%x 0x%x 0x%x\n",
-				   i, &dma_addr,
-				   le32_to_cpu(p->des0), le32_to_cpu(p->des1),
-				   le32_to_cpu(p->des2), le32_to_cpu(p->des3));
+		dma_addr = dma_phy_addr + i * desc_size;
+		seq_printf(seq, "%d [%pad]: 0x%x 0x%x 0x%x 0x%x\n",
+				i, &dma_addr,
+				le32_to_cpu(p->des0), le32_to_cpu(p->des1),
+				le32_to_cpu(p->des2), le32_to_cpu(p->des3));
+		if (extend_desc)
+			p = &(++ep)->basic;
+		else
 			p++;
-		}
-		seq_printf(seq, "\n");
 	}
 }
 
@@ -7182,6 +7231,7 @@ int stmmac_reinit_queues(struct net_device *dev, u32 rx_cnt, u32 tx_cnt)
 			priv->rss.table[i] = ethtool_rxfh_indir_default(i,
 									rx_cnt);
 
+	stmmac_set_half_duplex(priv);
 	stmmac_napi_add(dev);
 
 	if (netif_running(dev))
@@ -7480,6 +7530,9 @@ int stmmac_dvr_probe(struct device *device,
 #ifdef STMMAC_VLAN_TAG_USED
 	/* Both mac100 and gmac support receive VLAN tag detection */
 	ndev->features |= NETIF_F_HW_VLAN_CTAG_RX | NETIF_F_HW_VLAN_STAG_RX;
+	ndev->hw_features |= NETIF_F_HW_VLAN_CTAG_RX;
+	priv->hw->hw_vlan_en = true;
+
 	if (priv->dma_cap.vlhash) {
 		ndev->features |= NETIF_F_HW_VLAN_CTAG_FILTER;
 		ndev->features |= NETIF_F_HW_VLAN_STAG_FILTER;

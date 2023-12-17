@@ -81,7 +81,10 @@
 #include <net/xdp.h>
 #include <net/mptcp.h>
 #include <net/netfilter/nf_conntrack_bpf.h>
+#include <net/netkit.h>
 #include <linux/un.h>
+
+#include "dev.h"
 
 static const struct bpf_func_proto *
 bpf_sk_base_func_proto(enum bpf_func_id func_id);
@@ -2466,6 +2469,16 @@ static const struct bpf_func_proto bpf_clone_redirect_proto = {
 DEFINE_PER_CPU(struct bpf_redirect_info, bpf_redirect_info);
 EXPORT_PER_CPU_SYMBOL_GPL(bpf_redirect_info);
 
+static struct net_device *skb_get_peer_dev(struct net_device *dev)
+{
+	const struct net_device_ops *ops = dev->netdev_ops;
+
+	if (likely(ops->ndo_get_peer_dev))
+		return INDIRECT_CALL_1(ops->ndo_get_peer_dev,
+				       netkit_peer_dev, dev);
+	return NULL;
+}
+
 int skb_do_redirect(struct sk_buff *skb)
 {
 	struct bpf_redirect_info *ri = this_cpu_ptr(&bpf_redirect_info);
@@ -2479,17 +2492,15 @@ int skb_do_redirect(struct sk_buff *skb)
 	if (unlikely(!dev))
 		goto out_drop;
 	if (flags & BPF_F_PEER) {
-		const struct net_device_ops *ops = dev->netdev_ops;
-
-		if (unlikely(!ops->ndo_get_peer_dev ||
-			     !skb_at_tc_ingress(skb)))
+		if (unlikely(!skb_at_tc_ingress(skb)))
 			goto out_drop;
-		dev = ops->ndo_get_peer_dev(dev);
+		dev = skb_get_peer_dev(dev);
 		if (unlikely(!dev ||
 			     !(dev->flags & IFF_UP) ||
 			     net_eq(net, dev_net(dev))))
 			goto out_drop;
 		skb->dev = dev;
+		dev_sw_netstats_rx_add(dev, skb->len);
 		return -EAGAIN;
 	}
 	return flags & BPF_F_NEIGH ?
@@ -4207,6 +4218,20 @@ void xdp_do_flush(void)
 	__xsk_map_flush();
 }
 EXPORT_SYMBOL_GPL(xdp_do_flush);
+
+#if defined(CONFIG_DEBUG_NET) && defined(CONFIG_BPF_SYSCALL)
+void xdp_do_check_flushed(struct napi_struct *napi)
+{
+	bool ret;
+
+	ret = dev_check_flush();
+	ret |= cpu_map_check_flush();
+	ret |= xsk_map_check_flush();
+
+	WARN_ONCE(ret, "Missing xdp_do_flush() invocation after NAPI by %ps\n",
+		  napi->poll);
+}
+#endif
 
 void bpf_clear_redirect_map(struct bpf_map *map)
 {
@@ -7213,7 +7238,6 @@ BPF_CALL_5(bpf_tcp_check_syncookie, struct sock *, sk, void *, iph, u32, iph_len
 	   struct tcphdr *, th, u32, th_len)
 {
 #ifdef CONFIG_SYN_COOKIES
-	u32 cookie;
 	int ret;
 
 	if (unlikely(!sk || th_len < sizeof(*th)))
@@ -7235,8 +7259,6 @@ BPF_CALL_5(bpf_tcp_check_syncookie, struct sock *, sk, void *, iph, u32, iph_len
 	if (tcp_synq_no_recent_overflow(sk))
 		return -ENOENT;
 
-	cookie = ntohl(th->ack_seq) - 1;
-
 	/* Both struct iphdr and struct ipv6hdr have the version field at the
 	 * same offset so we can cast to the shorter header (struct iphdr).
 	 */
@@ -7245,7 +7267,7 @@ BPF_CALL_5(bpf_tcp_check_syncookie, struct sock *, sk, void *, iph, u32, iph_len
 		if (sk->sk_family == AF_INET6 && ipv6_only_sock(sk))
 			return -EINVAL;
 
-		ret = __cookie_v4_check((struct iphdr *)iph, th, cookie);
+		ret = __cookie_v4_check((struct iphdr *)iph, th);
 		break;
 
 #if IS_BUILTIN(CONFIG_IPV6)
@@ -7256,7 +7278,7 @@ BPF_CALL_5(bpf_tcp_check_syncookie, struct sock *, sk, void *, iph, u32, iph_len
 		if (sk->sk_family != AF_INET6)
 			return -EINVAL;
 
-		ret = __cookie_v6_check((struct ipv6hdr *)iph, th, cookie);
+		ret = __cookie_v6_check((struct ipv6hdr *)iph, th);
 		break;
 #endif /* CONFIG_IPV6 */
 
@@ -7709,9 +7731,7 @@ static const struct bpf_func_proto bpf_tcp_raw_gen_syncookie_ipv6_proto = {
 BPF_CALL_2(bpf_tcp_raw_check_syncookie_ipv4, struct iphdr *, iph,
 	   struct tcphdr *, th)
 {
-	u32 cookie = ntohl(th->ack_seq) - 1;
-
-	if (__cookie_v4_check(iph, th, cookie) > 0)
+	if (__cookie_v4_check(iph, th) > 0)
 		return 0;
 
 	return -EACCES;
@@ -7732,9 +7752,7 @@ BPF_CALL_2(bpf_tcp_raw_check_syncookie_ipv6, struct ipv6hdr *, iph,
 	   struct tcphdr *, th)
 {
 #if IS_BUILTIN(CONFIG_IPV6)
-	u32 cookie = ntohl(th->ack_seq) - 1;
-
-	if (__cookie_v6_check(iph, th, cookie) > 0)
+	if (__cookie_v6_check(iph, th) > 0)
 		return 0;
 
 	return -EACCES;
@@ -11751,9 +11769,7 @@ bpf_sk_base_func_proto(enum bpf_func_id func_id)
 	return func;
 }
 
-__diag_push();
-__diag_ignore_all("-Wmissing-prototypes",
-		  "Global functions as their definitions will be in vmlinux BTF");
+__bpf_kfunc_start_defs();
 __bpf_kfunc int bpf_dynptr_from_skb(struct sk_buff *skb, u64 flags,
 				    struct bpf_dynptr_kern *ptr__uninit)
 {
@@ -11800,7 +11816,7 @@ __bpf_kfunc int bpf_sock_addr_set_sun_path(struct bpf_sock_addr_kern *sa_kern,
 
 	return 0;
 }
-__diag_pop();
+__bpf_kfunc_end_defs();
 
 int bpf_dynptr_from_skb_rdonly(struct sk_buff *skb, u64 flags,
 			       struct bpf_dynptr_kern *ptr__uninit)
@@ -11863,10 +11879,7 @@ static int __init bpf_kfunc_init(void)
 }
 late_initcall(bpf_kfunc_init);
 
-/* Disables missing prototype warnings */
-__diag_push();
-__diag_ignore_all("-Wmissing-prototypes",
-		  "Global functions as their definitions will be in vmlinux BTF");
+__bpf_kfunc_start_defs();
 
 /* bpf_sock_destroy: Destroy the given socket with ECONNABORTED error code.
  *
@@ -11900,7 +11913,7 @@ __bpf_kfunc int bpf_sock_destroy(struct sock_common *sock)
 	return sk->sk_prot->diag_destroy(sk, ECONNABORTED);
 }
 
-__diag_pop()
+__bpf_kfunc_end_defs();
 
 BTF_SET8_START(bpf_sk_iter_kfunc_ids)
 BTF_ID_FLAGS(func, bpf_sock_destroy, KF_TRUSTED_ARGS)

@@ -3,6 +3,7 @@
 
 import argparse
 import collections
+import filecmp
 import os
 import re
 import shutil
@@ -18,6 +19,21 @@ def c_upper(name):
 
 def c_lower(name):
     return name.lower().replace('-', '_')
+
+
+def limit_to_number(name):
+    """
+    Turn a string limit like u32-max or s64-min into its numerical value
+    """
+    if name[0] == 'u' and name.endswith('-min'):
+        return 0
+    width = int(name[1:-4])
+    if name[0] == 's':
+        width -= 1
+    value = (1 << width) - 1
+    if name[0] == 's' and name.endswith('-min'):
+        value = -value - 1
+    return value
 
 
 class BaseNlLib:
@@ -42,14 +58,18 @@ class Type(SpecAttr):
         self.type = attr['type']
         self.checks = attr.get('checks', {})
 
+        self.request = False
+        self.reply = False
+
         if 'len' in attr:
             self.len = attr['len']
+
         if 'nested-attributes' in attr:
             self.nested_attrs = attr['nested-attributes']
             if self.nested_attrs == family.name:
-                self.nested_render_name = f"{family.name}"
+                self.nested_render_name = c_lower(f"{family.name}")
             else:
-                self.nested_render_name = f"{family.name}_{c_lower(self.nested_attrs)}"
+                self.nested_render_name = c_lower(f"{family.name}_{self.nested_attrs}")
 
             if self.nested_attrs in self.family.consts:
                 self.nested_struct_type = 'struct ' + self.nested_render_name + '_'
@@ -63,6 +83,14 @@ class Type(SpecAttr):
         # Added by resolve():
         self.enum_name = None
         delattr(self, "enum_name")
+
+    def get_limit(self, limit, default=None):
+        value = self.checks.get(limit, default)
+        if value is None:
+            return value
+        if not isinstance(value, int):
+            value = limit_to_number(value)
+        return value
 
     def resolve(self):
         if 'name-prefix' in self.attr:
@@ -131,6 +159,15 @@ class Type(SpecAttr):
 
         spec = self._attr_policy(policy)
         cw.p(f"\t[{self.enum_name}] = {spec},")
+
+    def _mnl_type(self):
+        # mnl does not have helpers for signed integer types
+        # turn signed type into unsigned
+        # this only makes sense for scalar types
+        t = self.type
+        if t[0] == 's':
+            t = 'u' + t[1:]
+        return t
 
     def _attr_typol(self):
         raise Exception(f"Type policy not implemented for class type {self.type}")
@@ -259,6 +296,27 @@ class TypeScalar(Type):
         if 'byte-order' in attr:
             self.byte_order_comment = f" /* {attr['byte-order']} */"
 
+        if 'enum' in self.attr:
+            enum = self.family.consts[self.attr['enum']]
+            low, high = enum.value_range()
+            if 'min' not in self.checks:
+                if low != 0 or self.type[0] == 's':
+                    self.checks['min'] = low
+            if 'max' not in self.checks:
+                self.checks['max'] = high
+
+        if 'min' in self.checks and 'max' in self.checks:
+            if self.get_limit('min') > self.get_limit('max'):
+                raise Exception(f'Invalid limit for "{self.name}" min: {self.get_limit("min")} max: {self.get_limit("max")}')
+            self.checks['range'] = True
+
+        low = min(self.get_limit('min', 0), self.get_limit('max', 0))
+        high = max(self.get_limit('min', 0), self.get_limit('max', 0))
+        if low < 0 and self.type[0] == 'u':
+            raise Exception(f'Invalid limit for "{self.name}" negative limit for unsigned type')
+        if low < -32768 or high > 32767:
+            self.checks['full-range'] = True
+
         # Added by resolve():
         self.is_bitfield = None
         delattr(self, "is_bitfield")
@@ -277,16 +335,14 @@ class TypeScalar(Type):
 
         maybe_enum = not self.is_bitfield and 'enum' in self.attr
         if maybe_enum and self.family.consts[self.attr['enum']].enum_name:
-            self.type_name = f"enum {self.family.name}_{c_lower(self.attr['enum'])}"
+            self.type_name = c_lower(f"enum {self.family.name}_{self.attr['enum']}")
+        elif self.is_auto_scalar:
+            self.type_name = '__' + self.type[0] + '64'
         else:
             self.type_name = '__' + self.type
 
-    def _mnl_type(self):
-        t = self.type
-        # mnl does not have a helper for signed types
-        if t[0] == 's':
-            t = 'u' + t[1:]
-        return t
+    def mnl_type(self):
+        return self._mnl_type()
 
     def _attr_policy(self, policy):
         if 'flags-mask' in self.checks or self.is_bitfield:
@@ -298,27 +354,27 @@ class TypeScalar(Type):
                 flag_cnt = len(flags['entries'])
                 mask = (1 << flag_cnt) - 1
             return f"NLA_POLICY_MASK({policy}, 0x{mask:x})"
+        elif 'full-range' in self.checks:
+            return f"NLA_POLICY_FULL_RANGE({policy}, &{c_lower(self.enum_name)}_range)"
+        elif 'range' in self.checks:
+            return f"NLA_POLICY_RANGE({policy}, {self.get_limit('min')}, {self.get_limit('max')})"
         elif 'min' in self.checks:
-            return f"NLA_POLICY_MIN({policy}, {self.checks['min']})"
-        elif 'enum' in self.attr:
-            enum = self.family.consts[self.attr['enum']]
-            low, high = enum.value_range()
-            if low == 0:
-                return f"NLA_POLICY_MAX({policy}, {high})"
-            return f"NLA_POLICY_RANGE({policy}, {low}, {high})"
+            return f"NLA_POLICY_MIN({policy}, {self.get_limit('min')})"
+        elif 'max' in self.checks:
+            return f"NLA_POLICY_MAX({policy}, {self.get_limit('max')})"
         return super()._attr_policy(policy)
 
     def _attr_typol(self):
-        return f'.type = YNL_PT_U{self.type[1:]}, '
+        return f'.type = YNL_PT_U{c_upper(self.type[1:])}, '
 
     def arg_member(self, ri):
         return [f'{self.type_name} {self.c_name}{self.byte_order_comment}']
 
     def attr_put(self, ri, var):
-        self._attr_put_simple(ri, var, self._mnl_type())
+        self._attr_put_simple(ri, var, self.mnl_type())
 
     def _attr_get(self, ri, var):
-        return f"{var}->{self.c_name} = mnl_attr_get_{self._mnl_type()}(attr);", None, None
+        return f"{var}->{self.c_name} = mnl_attr_get_{self.mnl_type()}(attr);", None, None
 
     def _setter_lines(self, ri, member, presence):
         return [f"{member} = {self.c_name};"]
@@ -355,10 +411,13 @@ class TypeString(Type):
         return f'.type = YNL_PT_NUL_STR, '
 
     def _attr_policy(self, policy):
-        mem = '{ .type = ' + policy
-        if 'max-len' in self.checks:
-            mem += ', .len = ' + str(self.checks['max-len'])
-        mem += ', }'
+        if 'exact-len' in self.checks:
+            mem = 'NLA_POLICY_EXACT_LEN(' + str(self.checks['exact-len']) + ')'
+        else:
+            mem = '{ .type = ' + policy
+            if 'max-len' in self.checks:
+                mem += ', .len = ' + str(self.get_limit('max-len'))
+            mem += ', }'
         return mem
 
     def attr_policy(self, cw):
@@ -404,14 +463,17 @@ class TypeBinary(Type):
         return f'.type = YNL_PT_BINARY,'
 
     def _attr_policy(self, policy):
-        mem = '{ '
-        if len(self.checks) == 1 and 'min-len' in self.checks:
-            mem += '.len = ' + str(self.checks['min-len'])
-        elif len(self.checks) == 0:
-            mem += '.type = NLA_BINARY'
+        if 'exact-len' in self.checks:
+            mem = 'NLA_POLICY_EXACT_LEN(' + str(self.checks['exact-len']) + ')'
         else:
-            raise Exception('One or more of binary type checks not implemented, yet')
-        mem += ', }'
+            mem = '{ '
+            if len(self.checks) == 1 and 'min-len' in self.checks:
+                mem += '.len = ' + str(self.get_limit('min-len'))
+            elif len(self.checks) == 0:
+                mem += '.type = NLA_BINARY'
+            else:
+                raise Exception('One or more of binary type checks not implemented, yet')
+            mem += ', }'
         return mem
 
     def attr_put(self, ri, var):
@@ -431,6 +493,31 @@ class TypeBinary(Type):
                 f"{presence}_len = len;",
                 f"{member} = malloc({presence}_len);",
                 f'memcpy({member}, {self.c_name}, {presence}_len);']
+
+
+class TypeBitfield32(Type):
+    def _complex_member_type(self, ri):
+        return "struct nla_bitfield32"
+
+    def _attr_typol(self):
+        return f'.type = YNL_PT_BITFIELD32, '
+
+    def _attr_policy(self, policy):
+        if not 'enum' in self.attr:
+            raise Exception('Enum required for bitfield32 attr')
+        enum = self.family.consts[self.attr['enum']]
+        mask = enum.get_mask(as_flags=True)
+        return f"NLA_POLICY_BITFIELD32({mask})"
+
+    def attr_put(self, ri, var):
+        line = f"mnl_attr_put(nlh, {self.enum_name}, sizeof(struct nla_bitfield32), &{var}->{self.c_name})"
+        self._attr_put_line(ri, var, line)
+
+    def _attr_get(self, ri, var):
+        return f"memcpy(&{var}->{self.c_name}, mnl_attr_get_payload(attr), sizeof(struct nla_bitfield32));", None, None
+
+    def _setter_lines(self, ri, member, presence):
+        return [f"memcpy(&{member}, {self.c_name}, sizeof(struct nla_bitfield32));"]
 
 
 class TypeNest(Type):
@@ -476,12 +563,8 @@ class TypeMultiAttr(Type):
     def presence_type(self):
         return 'count'
 
-    def _mnl_type(self):
-        t = self.type
-        # mnl does not have a helper for signed types
-        if t[0] == 's':
-            t = 'u' + t[1:]
-        return t
+    def mnl_type(self):
+        return self._mnl_type()
 
     def _complex_member_type(self, ri):
         if 'type' not in self.attr or self.attr['type'] == 'nest':
@@ -516,7 +599,7 @@ class TypeMultiAttr(Type):
 
     def attr_put(self, ri, var):
         if self.attr['type'] in scalars:
-            put_type = self._mnl_type()
+            put_type = self.mnl_type()
             ri.cw.p(f"for (unsigned int i = 0; i < {var}->n_{self.c_name}; i++)")
             ri.cw.p(f"mnl_attr_put_{put_type}(nlh, {self.enum_name}, {var}->{self.c_name}[i]);")
         elif 'type' not in self.attr or self.attr['type'] == 'nest':
@@ -602,9 +685,9 @@ class Struct:
 
         self.nested = type_list is None
         if family.name == c_lower(space_name):
-            self.render_name = f"{family.name}"
+            self.render_name = c_lower(family.name)
         else:
-            self.render_name = f"{family.name}_{c_lower(space_name)}"
+            self.render_name = c_lower(family.name + '-' + space_name)
         self.struct_name = 'struct ' + self.render_name
         if self.nested and space_name in family.consts:
             self.struct_name += '_'
@@ -672,10 +755,16 @@ class EnumSet(SpecEnumSet):
         if 'enum-name' in yaml:
             if yaml['enum-name']:
                 self.enum_name = 'enum ' + c_lower(yaml['enum-name'])
+                self.user_type = self.enum_name
             else:
                 self.enum_name = None
         else:
             self.enum_name = 'enum ' + self.render_name
+
+        if self.enum_name:
+            self.user_type = self.enum_name
+        else:
+            self.user_type = 'int'
 
         self.value_pfx = yaml.get('name-prefix', f"{family.name}-{yaml['name']}-")
 
@@ -707,9 +796,11 @@ class AttrSet(SpecAttrSet):
                 pfx = f"{family.name}-a-{self.name}-"
             self.name_prefix = c_upper(pfx)
             self.max_name = c_upper(self.yaml.get('attr-max-name', f"{self.name_prefix}max"))
+            self.cnt_name = c_upper(self.yaml.get('attr-cnt-name', f"__{self.name_prefix}max"))
         else:
             self.name_prefix = family.attr_sets[self.subset_of].name_prefix
             self.max_name = family.attr_sets[self.subset_of].max_name
+            self.cnt_name = family.attr_sets[self.subset_of].cnt_name
 
         # Added by resolve:
         self.c_name = None
@@ -735,6 +826,8 @@ class AttrSet(SpecAttrSet):
             t = TypeString(self.family, self, elem, value)
         elif elem['type'] == 'binary':
             t = TypeBinary(self.family, self, elem, value)
+        elif elem['type'] == 'bitfield32':
+            t = TypeBitfield32(self.family, self, elem, value)
         elif elem['type'] == 'nest':
             t = TypeNest(self.family, self, elem, value)
         elif elem['type'] == 'array-nest':
@@ -754,7 +847,7 @@ class Operation(SpecOperation):
     def __init__(self, family, yaml, req_value, rsp_value):
         super().__init__(family, yaml, req_value, rsp_value)
 
-        self.render_name = family.name + '_' + c_lower(self.name)
+        self.render_name = c_lower(family.name + '_' + self.name)
 
         self.dual_policy = ('do' in yaml and 'request' in yaml['do']) and \
                          ('dump' in yaml and 'request' in yaml['dump'])
@@ -846,6 +939,7 @@ class Family(SpecFamily):
 
         self._load_root_sets()
         self._load_nested_sets()
+        self._load_attr_use()
         self._load_hooks()
 
         self.kernel_policy = self.yaml.get('kernel-policy', 'split')
@@ -966,6 +1060,22 @@ class Family(SpecFamily):
                         child.request |= struct.request
                         child.reply |= struct.reply
 
+    def _load_attr_use(self):
+        for _, struct in self.pure_nested_structs.items():
+            if struct.request:
+                for _, arg in struct.member_list():
+                    arg.request = True
+            if struct.reply:
+                for _, arg in struct.member_list():
+                    arg.reply = True
+
+        for root_set, rs_members in self.root_sets.items():
+            for attr, spec in self.attr_sets[root_set].items():
+                if attr in rs_members['request']:
+                    spec.request = True
+                if attr in rs_members['reply']:
+                    spec.reply = True
+
     def _load_global_policy(self):
         global_set = set()
         attr_set_name = None
@@ -1017,10 +1127,13 @@ class RenderInfo:
 
         # 'do' and 'dump' response parsing is identical
         self.type_consistent = True
-        if op_mode != 'do' and 'dump' in op and 'do' in op:
-            if ('reply' in op['do']) != ('reply' in op["dump"]):
-                self.type_consistent = False
-            elif 'reply' in op['do'] and op["do"]["reply"] != op["dump"]["reply"]:
+        if op_mode != 'do' and 'dump' in op:
+            if 'do' in op:
+                if ('reply' in op['do']) != ('reply' in op["dump"]):
+                    self.type_consistent = False
+                elif 'reply' in op['do'] and op["do"]["reply"] != op["dump"]["reply"]:
+                    self.type_consistent = False
+            else:
                 self.type_consistent = False
 
         self.attr_set = attr_set
@@ -1051,17 +1164,19 @@ class RenderInfo:
 
 
 class CodeWriter:
-    def __init__(self, nlib, out_file=None):
+    def __init__(self, nlib, out_file=None, overwrite=True):
         self.nlib = nlib
+        self._overwrite = overwrite
 
         self._nl = False
         self._block_end = False
         self._silent_block = False
         self._ind = 0
+        self._ifdef_block = None
         if out_file is None:
             self._out = os.sys.stdout
         else:
-            self._out = tempfile.TemporaryFile('w+')
+            self._out = tempfile.NamedTemporaryFile('w+')
             self._out_file = out_file
 
     def __del__(self):
@@ -1070,6 +1185,11 @@ class CodeWriter:
     def close_out_file(self):
         if self._out == os.sys.stdout:
             return
+        # Avoid modifying the file if contents didn't change
+        self._out.flush()
+        if not self._overwrite and os.path.isfile(self._out_file):
+            if filecmp.cmp(self._out.name, self._out_file, shallow=False):
+                return
         with open(self._out_file, 'w+') as out_file:
             self._out.seek(0)
             shutil.copyfileobj(self._out, out_file)
@@ -1098,6 +1218,8 @@ class CodeWriter:
         if self._silent_block:
             ind += 1
         self._silent_block = line.endswith(')') and CodeWriter._is_cond(line)
+        if line[0] == '#':
+            ind = 0
         if add_ind:
             ind += add_ind
         self._out.write('\t' * ind + line + '\n')
@@ -1221,11 +1343,24 @@ class CodeWriter:
         for one in members:
             line = '.' + one[0]
             line += '\t' * ((longest - len(one[0]) - 1 + 7) // 8)
-            line += '= ' + one[1] + ','
+            line += '= ' + str(one[1]) + ','
             self.p(line)
 
+    def ifdef_block(self, config):
+        config_option = None
+        if config:
+            config_option = 'CONFIG_' + c_upper(config)
+        if self._ifdef_block == config_option:
+            return
 
-scalars = {'u8', 'u16', 'u32', 'u64', 's32', 's64'}
+        if self._ifdef_block:
+            self.p('#endif /* ' + self._ifdef_block + ' */')
+        if config_option:
+            self.p('#ifdef ' + config_option)
+        self._ifdef_block = config_option
+
+
+scalars = {'u8', 'u16', 'u32', 'u64', 's32', 's64', 'uint', 'sint'}
 
 direction_to_suffix = {
     'reply': '_rsp',
@@ -1304,7 +1439,7 @@ def op_prefix(ri, direction, deref=False):
                 suffix += '_rsp'
                 suffix += '_dump' if deref else '_list'
 
-    return f"{ri.family['name']}{suffix}"
+    return f"{ri.family.c_name}{suffix}"
 
 
 def type_name(ri, direction, deref=False):
@@ -1356,8 +1491,8 @@ def put_typol(cw, struct):
 
 def _put_enum_to_str_helper(cw, render_name, map_name, arg_name, enum=None):
     args = [f'int {arg_name}']
-    if enum and not ('enum-name' in enum and not enum['enum-name']):
-        args = [f'enum {render_name} {arg_name}']
+    if enum:
+        args = [enum.user_type + ' ' + arg_name]
     cw.write_func_prot('const char *', f'{render_name}_str', args)
     cw.block_start()
     if enum and enum.type == 'flags':
@@ -1370,14 +1505,20 @@ def _put_enum_to_str_helper(cw, render_name, map_name, arg_name, enum=None):
 
 
 def put_op_name_fwd(family, cw):
-    cw.write_func_prot('const char *', f'{family.name}_op_str', ['int op'], suffix=';')
+    cw.write_func_prot('const char *', f'{family.c_name}_op_str', ['int op'], suffix=';')
 
 
 def put_op_name(family, cw):
-    map_name = f'{family.name}_op_strmap'
+    map_name = f'{family.c_name}_op_strmap'
     cw.block_start(line=f"static const char * const {map_name}[] =")
     for op_name, op in family.msgs.items():
         if op.rsp_value:
+            # Make sure we don't add duplicated entries, if multiple commands
+            # produce the same response in legacy families.
+            if family.rsp_by_value[op.rsp_value] != op:
+                cw.p(f'// skip "{op_name}", duplicate reply value')
+                continue
+
             if op.req_value == op.rsp_value:
                 cw.p(f'[{op.enum_name}] = "{op_name}",')
             else:
@@ -1385,13 +1526,11 @@ def put_op_name(family, cw):
     cw.block_end(line=';')
     cw.nl()
 
-    _put_enum_to_str_helper(cw, family.name + '_op', map_name, 'op')
+    _put_enum_to_str_helper(cw, family.c_name + '_op', map_name, 'op')
 
 
 def put_enum_to_str_fwd(family, cw, enum):
-    args = [f'enum {enum.render_name} value']
-    if 'enum-name' in enum and not enum['enum-name']:
-        args = ['int value']
+    args = [enum.user_type + ' value']
     cw.write_func_prot('const char *', f'{enum.render_name}_str', args, suffix=';')
 
 
@@ -1515,11 +1654,8 @@ def _multi_parse(ri, struct, init_lines, local_vars):
             ri.cw.p(f"parg.data = &dst->{aspec.c_name}[i];")
             ri.cw.p(f"if ({aspec.nested_render_name}_parse(&parg, attr))")
             ri.cw.p('return MNL_CB_ERROR;')
-        elif aspec['type'] in scalars:
-            t = aspec['type']
-            if t[0] == 's':
-                t = 'u' + t[1:]
-            ri.cw.p(f"dst->{aspec.c_name}[i] = mnl_attr_get_{t}(attr);")
+        elif aspec.type in scalars:
+            ri.cw.p(f"dst->{aspec.c_name}[i] = mnl_attr_get_{aspec.mnl_type()}(attr);")
         else:
             raise Exception('Nest parsing type not supported yet')
         ri.cw.p('i++;')
@@ -1710,7 +1846,7 @@ def _print_type(ri, direction, struct):
     if ri.op_mode == 'dump':
         suffix += '_dump'
 
-    ri.cw.block_start(line=f"struct {ri.family['name']}{suffix}")
+    ri.cw.block_start(line=f"struct {ri.family.c_name}{suffix}")
 
     meta_started = False
     for _, attr in struct.member_list():
@@ -1807,7 +1943,7 @@ def print_wrapped_type(ri):
         ri.cw.p('__u8 cmd;')
         ri.cw.p('struct ynl_ntf_base_type *next;')
         ri.cw.p(f"void (*free)({type_name(ri, 'reply')} *ntf);")
-    ri.cw.p(f"{type_name(ri, 'reply', deref=True)} obj __attribute__ ((aligned (8)));")
+    ri.cw.p(f"{type_name(ri, 'reply', deref=True)} obj __attribute__((aligned(8)));")
     ri.cw.block_end(line=';')
     ri.cw.nl()
     print_free_prototype(ri, 'reply')
@@ -1905,10 +2041,13 @@ def print_req_policy_fwd(cw, struct, ri=None, terminate=True):
 
 
 def print_req_policy(cw, struct, ri=None):
+    if ri and ri.op:
+        cw.ifdef_block(ri.op.get('config-cond', None))
     print_req_policy_fwd(cw, struct, ri=ri, terminate=False)
     for _, arg in struct.member_list():
         arg.attr_policy(cw)
     cw.p("};")
+    cw.ifdef_block(None)
     cw.nl()
 
 
@@ -1918,6 +2057,35 @@ def kernel_can_gen_family_struct(family):
 
 def policy_should_be_static(family):
     return family.kernel_policy == 'split' or kernel_can_gen_family_struct(family)
+
+
+def print_kernel_policy_ranges(family, cw):
+    first = True
+    for _, attr_set in family.attr_sets.items():
+        if attr_set.subset_of:
+            continue
+
+        for _, attr in attr_set.items():
+            if not attr.request:
+                continue
+            if 'full-range' not in attr.checks:
+                continue
+
+            if first:
+                cw.p('/* Integer value ranges */')
+                first = False
+
+            sign = '' if attr.type[0] == 'u' else '_signed'
+            suffix = 'ULL' if attr.type[0] == 'u' else 'LL'
+            cw.block_start(line=f'static const struct netlink_range_validation{sign} {c_lower(attr.enum_name)}_range =')
+            members = []
+            if 'min' in attr.checks:
+                members.append(('min', str(attr.get_limit('min')) + suffix))
+            if 'max' in attr.checks:
+                members.append(('max', str(attr.get_limit('max')) + suffix))
+            cw.write_struct_init(members)
+            cw.block_end(line=';')
+            cw.nl()
 
 
 def print_kernel_op_table_fwd(family, cw, terminate):
@@ -1944,7 +2112,7 @@ def print_kernel_op_table_fwd(family, cw, terminate):
             cnt = len(family.ops)
 
         qual = 'static const' if not exported else 'const'
-        line = f"{qual} struct {struct_type} {family.name}_nl_ops[{cnt}]"
+        line = f"{qual} struct {struct_type} {family.c_name}_nl_ops[{cnt}]"
         if terminate:
             cw.p(f"extern {line};")
         else:
@@ -1998,6 +2166,7 @@ def print_kernel_op_table(family, cw):
             if op.is_async:
                 continue
 
+            cw.ifdef_block(op.get('config-cond', None))
             cw.block_start()
             members = [('cmd', op.enum_name)]
             if 'dont-validate' in op:
@@ -2028,6 +2197,7 @@ def print_kernel_op_table(family, cw):
                 if op.is_async or op_mode not in op:
                     continue
 
+                cw.ifdef_block(op.get('config-cond', None))
                 cw.block_start()
                 members = [('cmd', op.enum_name)]
                 if 'dont-validate' in op:
@@ -2063,6 +2233,7 @@ def print_kernel_op_table(family, cw):
                 members.append(('flags', ' | '.join([c_upper('genl-' + x) for x in flags])))
                 cw.write_struct_init(members)
                 cw.block_end(line=',')
+    cw.ifdef_block(None)
 
     cw.block_end(line=';')
     cw.nl()
@@ -2084,7 +2255,7 @@ def print_kernel_mcgrp_src(family, cw):
     if not family.mcgrps['list']:
         return
 
-    cw.block_start('static const struct genl_multicast_group ' + family.name + '_nl_mcgrps[] =')
+    cw.block_start('static const struct genl_multicast_group ' + family.c_name + '_nl_mcgrps[] =')
     for grp in family.mcgrps['list']:
         name = grp['name']
         grp_id = c_upper(f"{family.name}-nlgrp-{name}")
@@ -2097,7 +2268,7 @@ def print_kernel_family_struct_hdr(family, cw):
     if not kernel_can_gen_family_struct(family):
         return
 
-    cw.p(f"extern struct genl_family {family.name}_nl_family;")
+    cw.p(f"extern struct genl_family {family.c_name}_nl_family;")
     cw.nl()
 
 
@@ -2112,14 +2283,14 @@ def print_kernel_family_struct_src(family, cw):
     cw.p('.parallel_ops\t= true,')
     cw.p('.module\t\t= THIS_MODULE,')
     if family.kernel_policy == 'per-op':
-        cw.p(f'.ops\t\t= {family.name}_nl_ops,')
-        cw.p(f'.n_ops\t\t= ARRAY_SIZE({family.name}_nl_ops),')
+        cw.p(f'.ops\t\t= {family.c_name}_nl_ops,')
+        cw.p(f'.n_ops\t\t= ARRAY_SIZE({family.c_name}_nl_ops),')
     elif family.kernel_policy == 'split':
-        cw.p(f'.split_ops\t= {family.name}_nl_ops,')
-        cw.p(f'.n_split_ops\t= ARRAY_SIZE({family.name}_nl_ops),')
+        cw.p(f'.split_ops\t= {family.c_name}_nl_ops,')
+        cw.p(f'.n_split_ops\t= ARRAY_SIZE({family.c_name}_nl_ops),')
     if family.mcgrps['list']:
-        cw.p(f'.mcgrps\t\t= {family.name}_nl_mcgrps,')
-        cw.p(f'.n_mcgrps\t= ARRAY_SIZE({family.name}_nl_mcgrps),')
+        cw.p(f'.mcgrps\t\t= {family.c_name}_nl_mcgrps,')
+        cw.p(f'.n_mcgrps\t= ARRAY_SIZE({family.c_name}_nl_mcgrps),')
     cw.block_end(';')
 
 
@@ -2129,7 +2300,7 @@ def uapi_enum_start(family, cw, obj, ckey='', enum_name='enum-name'):
         if obj[enum_name]:
             start_line = 'enum ' + c_lower(obj[enum_name])
     elif ckey and ckey in obj:
-        start_line = 'enum ' + family.name + '_' + c_lower(obj[ckey])
+        start_line = 'enum ' + family.c_name + '_' + c_lower(obj[ckey])
     cw.block_start(line=start_line)
 
 
@@ -2203,8 +2374,7 @@ def render_uapi(family, cw):
         if attr_set.subset_of:
             continue
 
-        cnt_name = c_upper(family.get('attr-cnt-name', f"__{attr_set.name_prefix}MAX"))
-        max_value = f"({cnt_name} - 1)"
+        max_value = f"({attr_set.cnt_name} - 1)"
 
         val = 0
         uapi_enum_start(family, cw, attr_set.yaml, 'enum-name')
@@ -2216,7 +2386,7 @@ def render_uapi(family, cw):
             val += 1
             cw.p(attr.enum_name + suffix)
         cw.nl()
-        cw.p(cnt_name + ('' if max_by_define else ','))
+        cw.p(attr_set.cnt_name + ('' if max_by_define else ','))
         if not max_by_define:
             cw.p(f"{attr_set.max_name} = {max_value}")
         cw.block_end(line=';')
@@ -2314,11 +2484,21 @@ def render_user_family(family, cw, prototype):
         cw.nl()
 
     cw.block_start(f'{symbol} = ')
-    cw.p(f'.name\t\t= "{family.name}",')
+    cw.p(f'.name\t\t= "{family.c_name}",')
     if family.ntfs:
         cw.p(f".ntf_info\t= {family['name']}_ntf_info,")
         cw.p(f".ntf_info_size\t= MNL_ARRAY_SIZE({family['name']}_ntf_info),")
     cw.block_end(line=';')
+
+
+def family_contains_bitfield32(family):
+    for _, attr_set in family.attr_sets.items():
+        if attr_set.subset_of:
+            continue
+        for _, attr in attr_set.items():
+            if attr.type == "bitfield32":
+                return True
+    return False
 
 
 def find_kernel_root(full_path):
@@ -2338,6 +2518,8 @@ def main():
     parser.add_argument('--header', dest='header', action='store_true', default=None)
     parser.add_argument('--source', dest='header', action='store_false')
     parser.add_argument('--user-header', nargs='+', default=[])
+    parser.add_argument('--cmp-out', action='store_true', default=None,
+                        help='Do not overwrite the output file if the new output is identical to the old')
     parser.add_argument('--exclude-op', action='append', default=[])
     parser.add_argument('-o', dest='out_file', type=str, default=None)
     args = parser.parse_args()
@@ -2365,7 +2547,7 @@ def main():
         print(f'Message enum-model {parsed.msg_id_model} not supported for {args.mode} generation')
         os.sys.exit(1)
 
-    cw = CodeWriter(BaseNlLib(), args.out_file)
+    cw = CodeWriter(BaseNlLib(), args.out_file, overwrite=(not args.cmp_out))
 
     _, spec_kernel = find_kernel_root(args.spec)
     if args.mode == 'uapi' or args.header:
@@ -2386,7 +2568,7 @@ def main():
         render_uapi(parsed, cw)
         return
 
-    hdr_prot = f"_LINUX_{parsed.name.upper()}_GEN_H"
+    hdr_prot = f"_LINUX_{parsed.c_name.upper()}_GEN_H"
     if args.header:
         cw.p('#ifndef ' + hdr_prot)
         cw.p('#define ' + hdr_prot)
@@ -2406,6 +2588,8 @@ def main():
         cw.p('#include <string.h>')
         if args.header:
             cw.p('#include <linux/types.h>')
+            if family_contains_bitfield32(parsed):
+                cw.p('#include <linux/netlink.h>')
         else:
             cw.p(f'#include "{parsed.name}-user.h"')
             cw.p('#include "ynl.h"')
@@ -2459,6 +2643,8 @@ def main():
             print_kernel_mcgrp_hdr(parsed, cw)
             print_kernel_family_struct_hdr(parsed, cw)
         else:
+            print_kernel_policy_ranges(parsed, cw)
+
             for _, struct in sorted(parsed.pure_nested_structs.items()):
                 if struct.request:
                     cw.p('/* Common nested types */')
