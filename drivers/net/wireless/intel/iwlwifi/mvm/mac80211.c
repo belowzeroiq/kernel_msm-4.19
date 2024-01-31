@@ -152,6 +152,16 @@ struct ieee80211_regdomain *iwl_mvm_get_regdomain(struct wiphy *wiphy,
 	mvm->lar_regdom_set = true;
 	mvm->mcc_src = src_id;
 
+	/* Some kind of regulatory mess means we need to currently disallow
+	 * puncturing in the US and Canada. Do that here, at least until we
+	 * figure out the new chanctx APIs for puncturing.
+	 */
+	if (resp->mcc == cpu_to_le16(IWL_MCC_US) ||
+	    resp->mcc == cpu_to_le16(IWL_MCC_CANADA))
+		ieee80211_hw_set(mvm->hw, DISALLOW_PUNCTURING);
+	else
+		__clear_bit(IEEE80211_HW_DISALLOW_PUNCTURING, mvm->hw->flags);
+
 	iwl_mei_set_country_code(__le16_to_cpu(resp->mcc));
 
 out:
@@ -288,7 +298,7 @@ int iwl_mvm_op_set_antenna(struct ieee80211_hw *hw, u32 tx_ant, u32 rx_ant)
 	/* This has been tested on those devices only */
 	if (mvm->trans->trans_cfg->device_family != IWL_DEVICE_FAMILY_9000 &&
 	    mvm->trans->trans_cfg->device_family != IWL_DEVICE_FAMILY_22000)
-		return -ENOTSUPP;
+		return -EOPNOTSUPP;
 
 	if (!mvm->nvm_data)
 		return -EBUSY;
@@ -516,6 +526,10 @@ int iwl_mvm_mac_setup_register(struct iwl_mvm *mvm)
 	else
 		hw->wiphy->regulatory_flags |= REGULATORY_CUSTOM_REG |
 					       REGULATORY_DISABLE_BEACON_HINTS;
+
+	if (mvm->trans->trans_cfg->device_family >= IWL_DEVICE_FAMILY_AX210)
+		wiphy_ext_feature_set(hw->wiphy,
+				      NL80211_EXT_FEATURE_DFS_CONCURRENT);
 
 	hw->wiphy->flags |= WIPHY_FLAG_AP_UAPSD;
 	hw->wiphy->flags |= WIPHY_FLAG_HAS_CHANNEL_SWITCH;
@@ -1181,14 +1195,12 @@ int iwl_mvm_mac_start(struct ieee80211_hw *hw)
 {
 	struct iwl_mvm *mvm = IWL_MAC80211_GET_MVM(hw);
 	int ret;
-	int retry, max_retry = 0;
 
 	mutex_lock(&mvm->mutex);
 
 	/* we are starting the mac not in error flow, and restart is enabled */
 	if (!test_bit(IWL_MVM_STATUS_HW_RESTART_REQUESTED, &mvm->status) &&
 	    iwlwifi_mod_params.fw_restart) {
-		max_retry = IWL_MAX_INIT_RETRY;
 		/*
 		 * This will prevent mac80211 recovery flows to trigger during
 		 * init failures
@@ -1196,13 +1208,7 @@ int iwl_mvm_mac_start(struct ieee80211_hw *hw)
 		set_bit(IWL_MVM_STATUS_STARTING, &mvm->status);
 	}
 
-	for (retry = 0; retry <= max_retry; retry++) {
-		ret = __iwl_mvm_mac_start(mvm);
-		if (!ret || mvm->pldr_sync)
-			break;
-
-		IWL_ERR(mvm, "mac start retry %d\n", retry);
-	}
+	ret = __iwl_mvm_mac_start(mvm);
 	clear_bit(IWL_MVM_STATUS_STARTING, &mvm->status);
 
 	mutex_unlock(&mvm->mutex);
@@ -1336,6 +1342,7 @@ void iwl_mvm_mac_stop(struct ieee80211_hw *hw)
 	 * discover that its list is now empty.
 	 */
 	cancel_work_sync(&mvm->async_handlers_wk);
+	wiphy_work_cancel(hw->wiphy, &mvm->async_handlers_wiphy_wk);
 }
 
 struct iwl_mvm_phy_ctxt *iwl_mvm_get_free_phy_ctxt(struct iwl_mvm *mvm)

@@ -381,7 +381,7 @@ static int tcp_v6_err(struct sk_buff *skb, struct inet6_skb_parm *opt,
 	struct tcp_sock *tp;
 	__u32 seq, snd_una;
 	struct sock *sk;
-	bool harderr;
+	bool fatal;
 	int err;
 
 	sk = __inet6_lookup_established(net, net->ipv4.tcp_death_row.hashinfo,
@@ -402,9 +402,9 @@ static int tcp_v6_err(struct sk_buff *skb, struct inet6_skb_parm *opt,
 		return 0;
 	}
 	seq = ntohl(th->seq);
-	harderr = icmpv6_err_convert(type, code, &err);
+	fatal = icmpv6_err_convert(type, code, &err);
 	if (sk->sk_state == TCP_NEW_SYN_RECV) {
-		tcp_req_err(sk, seq, harderr);
+		tcp_req_err(sk, seq, fatal);
 		return 0;
 	}
 
@@ -488,9 +488,6 @@ static int tcp_v6_err(struct sk_buff *skb, struct inet6_skb_parm *opt,
 			break;
 
 		ipv6_icmp_error(sk, skb, err, th->dest, ntohl(info), (u8 *)th);
-
-		if (!harderr)
-			break;
 
 		if (!sock_owned_by_user(sk)) {
 			WRITE_ONCE(sk->sk_err, err);
@@ -884,7 +881,7 @@ static void tcp_v6_send_response(const struct sock *sk, struct sk_buff *skb, u32
 	if (tcp_key_is_md5(key))
 		tot_len += TCPOLEN_MD5SIG_ALIGNED;
 	if (tcp_key_is_ao(key))
-		tot_len += tcp_ao_len(key->ao_key);
+		tot_len += tcp_ao_len_aligned(key->ao_key);
 
 #ifdef CONFIG_MPTCP
 	if (rst && !tcp_key_is_md5(key)) {
@@ -1702,7 +1699,7 @@ ipv6_pktoptions:
 	if (TCP_SKB_CB(opt_skb)->end_seq == tp->rcv_nxt &&
 	    !((1 << sk->sk_state) & (TCPF_CLOSE | TCPF_LISTEN))) {
 		if (np->rxopt.bits.rxinfo || np->rxopt.bits.rxoinfo)
-			np->mcast_oif = tcp_v6_iif(opt_skb);
+			WRITE_ONCE(np->mcast_oif, tcp_v6_iif(opt_skb));
 		if (np->rxopt.bits.rxhlim || np->rxopt.bits.rxohlim)
 			WRITE_ONCE(np->mcast_hops,
 				   ipv6_hdr(opt_skb)->hop_limit);

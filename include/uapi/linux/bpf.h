@@ -1074,8 +1074,10 @@ enum bpf_link_type {
 	BPF_LINK_TYPE_TCX = 11,
 	BPF_LINK_TYPE_UPROBE_MULTI = 12,
 	BPF_LINK_TYPE_NETKIT = 13,
-	MAX_BPF_LINK_TYPE,
+	__MAX_BPF_LINK_TYPE,
 };
+
+#define MAX_BPF_LINK_TYPE __MAX_BPF_LINK_TYPE
 
 enum bpf_perf_event_type {
 	BPF_PERF_EVENT_UNSPEC = 0,
@@ -6563,6 +6565,16 @@ struct bpf_link_info {
 			__u64 missed;
 		} kprobe_multi;
 		struct {
+			__aligned_u64 path;
+			__aligned_u64 offsets;
+			__aligned_u64 ref_ctr_offsets;
+			__aligned_u64 cookies;
+			__u32 path_size; /* in/out: real path size on success, including zero byte */
+			__u32 count; /* in/out: uprobe_multi offsets/ref_ctr_offsets/cookies count */
+			__u32 flags;
+			__u32 pid;
+		} uprobe_multi;
+		struct {
 			__u32 type; /* enum bpf_perf_event_type */
 			__u32 :32;
 			union {
@@ -6892,6 +6904,7 @@ enum {
 	BPF_TCP_LISTEN,
 	BPF_TCP_CLOSING,	/* Now a valid state */
 	BPF_TCP_NEW_SYN_RECV,
+	BPF_TCP_BOUND_INACTIVE,
 
 	BPF_TCP_MAX_STATES	/* Leave at the end! */
 };

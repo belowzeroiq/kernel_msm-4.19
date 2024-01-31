@@ -883,6 +883,7 @@ static int phylink_parse_mode(struct phylink *pl,
 {
 	struct fwnode_handle *dn;
 	const char *managed;
+	unsigned long caps;
 
 	dn = fwnode_get_named_child_node(fwnode, "fixed-link");
 	if (dn || fwnode_property_present(fwnode, "fixed-link"))
@@ -915,80 +916,18 @@ static int phylink_parse_mode(struct phylink *pl,
 		case PHY_INTERFACE_MODE_RGMII_RXID:
 		case PHY_INTERFACE_MODE_RGMII_TXID:
 		case PHY_INTERFACE_MODE_RTBI:
-			phylink_set(pl->supported, 10baseT_Half);
-			phylink_set(pl->supported, 10baseT_Full);
-			phylink_set(pl->supported, 100baseT_Half);
-			phylink_set(pl->supported, 100baseT_Full);
-			phylink_set(pl->supported, 1000baseT_Half);
-			phylink_set(pl->supported, 1000baseT_Full);
-			break;
-
 		case PHY_INTERFACE_MODE_1000BASEX:
-			phylink_set(pl->supported, 1000baseX_Full);
-			break;
-
 		case PHY_INTERFACE_MODE_2500BASEX:
-			phylink_set(pl->supported, 2500baseX_Full);
-			break;
-
 		case PHY_INTERFACE_MODE_5GBASER:
-			phylink_set(pl->supported, 5000baseT_Full);
-			break;
-
 		case PHY_INTERFACE_MODE_25GBASER:
-			phylink_set(pl->supported, 25000baseCR_Full);
-			phylink_set(pl->supported, 25000baseKR_Full);
-			phylink_set(pl->supported, 25000baseSR_Full);
-			fallthrough;
 		case PHY_INTERFACE_MODE_USXGMII:
 		case PHY_INTERFACE_MODE_10GKR:
 		case PHY_INTERFACE_MODE_10GBASER:
-			phylink_set(pl->supported, 10baseT_Half);
-			phylink_set(pl->supported, 10baseT_Full);
-			phylink_set(pl->supported, 100baseT_Half);
-			phylink_set(pl->supported, 100baseT_Full);
-			phylink_set(pl->supported, 1000baseT_Half);
-			phylink_set(pl->supported, 1000baseT_Full);
-			phylink_set(pl->supported, 1000baseX_Full);
-			phylink_set(pl->supported, 1000baseKX_Full);
-			phylink_set(pl->supported, 2500baseT_Full);
-			phylink_set(pl->supported, 2500baseX_Full);
-			phylink_set(pl->supported, 5000baseT_Full);
-			phylink_set(pl->supported, 10000baseT_Full);
-			phylink_set(pl->supported, 10000baseKR_Full);
-			phylink_set(pl->supported, 10000baseKX4_Full);
-			phylink_set(pl->supported, 10000baseCR_Full);
-			phylink_set(pl->supported, 10000baseSR_Full);
-			phylink_set(pl->supported, 10000baseLR_Full);
-			phylink_set(pl->supported, 10000baseLRM_Full);
-			phylink_set(pl->supported, 10000baseER_Full);
-			break;
-
 		case PHY_INTERFACE_MODE_XLGMII:
-			phylink_set(pl->supported, 25000baseCR_Full);
-			phylink_set(pl->supported, 25000baseKR_Full);
-			phylink_set(pl->supported, 25000baseSR_Full);
-			phylink_set(pl->supported, 40000baseKR4_Full);
-			phylink_set(pl->supported, 40000baseCR4_Full);
-			phylink_set(pl->supported, 40000baseSR4_Full);
-			phylink_set(pl->supported, 40000baseLR4_Full);
-			phylink_set(pl->supported, 50000baseCR2_Full);
-			phylink_set(pl->supported, 50000baseKR2_Full);
-			phylink_set(pl->supported, 50000baseSR2_Full);
-			phylink_set(pl->supported, 50000baseKR_Full);
-			phylink_set(pl->supported, 50000baseSR_Full);
-			phylink_set(pl->supported, 50000baseCR_Full);
-			phylink_set(pl->supported, 50000baseLR_ER_FR_Full);
-			phylink_set(pl->supported, 50000baseDR_Full);
-			phylink_set(pl->supported, 100000baseKR4_Full);
-			phylink_set(pl->supported, 100000baseSR4_Full);
-			phylink_set(pl->supported, 100000baseCR4_Full);
-			phylink_set(pl->supported, 100000baseLR4_ER4_Full);
-			phylink_set(pl->supported, 100000baseKR2_Full);
-			phylink_set(pl->supported, 100000baseSR2_Full);
-			phylink_set(pl->supported, 100000baseCR2_Full);
-			phylink_set(pl->supported, 100000baseLR2_ER2_FR2_Full);
-			phylink_set(pl->supported, 100000baseDR2_Full);
+			caps = ~(MAC_SYM_PAUSE | MAC_ASYM_PAUSE);
+			caps = phylink_get_capabilities(pl->link_config.interface, caps,
+							RATE_MATCH_NONE);
+			phylink_caps_to_linkmodes(pl->supported, caps);
 			break;
 
 		default:
@@ -1133,6 +1072,72 @@ static void phylink_pcs_an_restart(struct phylink *pl)
 	    phy_interface_mode_is_8023z(pl->link_config.interface) &&
 	    phylink_autoneg_inband(pl->cur_link_an_mode))
 		pl->pcs->ops->pcs_an_restart(pl->pcs);
+}
+
+/**
+ * phylink_pcs_neg_mode() - helper to determine PCS inband mode
+ * @mode: one of %MLO_AN_FIXED, %MLO_AN_PHY, %MLO_AN_INBAND.
+ * @interface: interface mode to be used
+ * @advertising: adertisement ethtool link mode mask
+ *
+ * Determines the negotiation mode to be used by the PCS, and returns
+ * one of:
+ *
+ * - %PHYLINK_PCS_NEG_NONE: interface mode does not support inband
+ * - %PHYLINK_PCS_NEG_OUTBAND: an out of band mode (e.g. reading the PHY)
+ *   will be used.
+ * - %PHYLINK_PCS_NEG_INBAND_DISABLED: inband mode selected but autoneg
+ *   disabled
+ * - %PHYLINK_PCS_NEG_INBAND_ENABLED: inband mode selected and autoneg enabled
+ *
+ * Note: this is for cases where the PCS itself is involved in negotiation
+ * (e.g. Clause 37, SGMII and similar) not Clause 73.
+ */
+static unsigned int phylink_pcs_neg_mode(unsigned int mode,
+					 phy_interface_t interface,
+					 const unsigned long *advertising)
+{
+	unsigned int neg_mode;
+
+	switch (interface) {
+	case PHY_INTERFACE_MODE_SGMII:
+	case PHY_INTERFACE_MODE_QSGMII:
+	case PHY_INTERFACE_MODE_QUSGMII:
+	case PHY_INTERFACE_MODE_USXGMII:
+		/* These protocols are designed for use with a PHY which
+		 * communicates its negotiation result back to the MAC via
+		 * inband communication. Note: there exist PHYs that run
+		 * with SGMII but do not send the inband data.
+		 */
+		if (!phylink_autoneg_inband(mode))
+			neg_mode = PHYLINK_PCS_NEG_OUTBAND;
+		else
+			neg_mode = PHYLINK_PCS_NEG_INBAND_ENABLED;
+		break;
+
+	case PHY_INTERFACE_MODE_1000BASEX:
+	case PHY_INTERFACE_MODE_2500BASEX:
+		/* 1000base-X is designed for use media-side for Fibre
+		 * connections, and thus the Autoneg bit needs to be
+		 * taken into account. We also do this for 2500base-X
+		 * as well, but drivers may not support this, so may
+		 * need to override this.
+		 */
+		if (!phylink_autoneg_inband(mode))
+			neg_mode = PHYLINK_PCS_NEG_OUTBAND;
+		else if (linkmode_test_bit(ETHTOOL_LINK_MODE_Autoneg_BIT,
+					   advertising))
+			neg_mode = PHYLINK_PCS_NEG_INBAND_ENABLED;
+		else
+			neg_mode = PHYLINK_PCS_NEG_INBAND_DISABLED;
+		break;
+
+	default:
+		neg_mode = PHYLINK_PCS_NEG_NONE;
+		break;
+	}
+
+	return neg_mode;
 }
 
 static void phylink_major_config(struct phylink *pl, bool restart,

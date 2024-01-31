@@ -69,7 +69,7 @@ def rst_paragraph(paragraph: str, level: int = 0) -> str:
 
 def rst_bullet(item: str, level: int = 0) -> str:
     """Return a formatted a bullet"""
-    return headroom(level) + f" - {item}"
+    return headroom(level) + f"- {item}"
 
 
 def rst_subsection(title: str) -> str:
@@ -120,6 +120,11 @@ def rst_toctree(maxdepth: int = 2) -> str:
     lines.append(f"   :maxdepth: {maxdepth}\n\n")
 
     return "\n".join(lines)
+
+
+def rst_label(title: str) -> str:
+    """Return a formatted label"""
+    return f".. _{title}:\n\n"
 
 
 # Parsers
@@ -235,7 +240,7 @@ def parse_attr_sets(entries: List[Dict[str, Any]]) -> str:
         lines.append(rst_section(entry["name"]))
         for attr in entry["attributes"]:
             type_ = attr.get("type")
-            attr_line = bold(attr["name"])
+            attr_line = attr["name"]
             if type_:
                 # Add the attribute type in the same line
                 attr_line += f" ({inline(type_)})"
@@ -245,7 +250,25 @@ def parse_attr_sets(entries: List[Dict[str, Any]]) -> str:
             for k in attr.keys():
                 if k in preprocessed + ignored:
                     continue
-                lines.append(rst_fields(k, sanitize(attr[k]), 2))
+                lines.append(rst_fields(k, sanitize(attr[k]), 0))
+            lines.append("\n")
+
+    return "\n".join(lines)
+
+
+def parse_sub_messages(entries: List[Dict[str, Any]]) -> str:
+    """Parse sub-message definitions"""
+    lines = []
+
+    for entry in entries:
+        lines.append(rst_section(entry["name"]))
+        for fmt in entry["formats"]:
+            value = fmt["value"]
+
+            lines.append(rst_bullet(bold(value)))
+            for attr in ['fixed-header', 'attribute-set']:
+                if attr in fmt:
+                    lines.append(rst_fields(attr, fmt[attr], 1))
             lines.append("\n")
 
     return "\n".join(lines)
@@ -286,6 +309,11 @@ def parse_yaml(obj: Dict[str, Any]) -> str:
     if "attribute-sets" in obj:
         lines.append(rst_subtitle("Attribute sets"))
         lines.append(parse_attr_sets(obj["attribute-sets"]))
+
+    # Sub-messages
+    if "sub-messages" in obj:
+        lines.append(rst_subtitle("Sub-messages"))
+        lines.append(parse_sub_messages(obj["sub-messages"]))
 
     return "\n".join(lines)
 
@@ -349,12 +377,13 @@ def generate_main_index_rst(output: str) -> None:
     lines = []
 
     lines.append(rst_header())
-    lines.append(rst_title("Netlink Specification"))
+    lines.append(rst_label("specs"))
+    lines.append(rst_title("Netlink Family Specifications"))
     lines.append(rst_toctree(1))
 
     index_dir = os.path.dirname(output)
     logging.debug("Looking for .rst files in %s", index_dir)
-    for filename in os.listdir(index_dir):
+    for filename in sorted(os.listdir(index_dir)):
         if not filename.endswith(".rst") or filename == "index.rst":
             continue
         lines.append(f"   {filename.replace('.rst', '')}\n")

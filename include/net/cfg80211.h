@@ -117,6 +117,11 @@ struct wiphy;
  *	This may be due to the driver or due to regulatory bandwidth
  *	restrictions.
  * @IEEE80211_CHAN_NO_EHT: EHT operation is not permitted on this channel.
+ * @IEEE80211_CHAN_DFS_CONCURRENT: See %NL80211_RRF_DFS_CONCURRENT
+ * @IEEE80211_CHAN_NO_UHB_VLP_CLIENT: Client connection with VLP AP
+ *	not permitted using this channel
+ * @IEEE80211_CHAN_NO_UHB_AFC_CLIENT: Client connection with AFC AP
+ *	not permitted using this channel
  */
 enum ieee80211_channel_flags {
 	IEEE80211_CHAN_DISABLED		= 1<<0,
@@ -140,6 +145,9 @@ enum ieee80211_channel_flags {
 	IEEE80211_CHAN_16MHZ		= 1<<18,
 	IEEE80211_CHAN_NO_320MHZ	= 1<<19,
 	IEEE80211_CHAN_NO_EHT		= 1<<20,
+	IEEE80211_CHAN_DFS_CONCURRENT	= 1<<21,
+	IEEE80211_CHAN_NO_UHB_VLP_CLIENT= 1<<22,
+	IEEE80211_CHAN_NO_UHB_AFC_CLIENT= 1<<23,
 };
 
 #define IEEE80211_CHAN_NO_HT40 \
@@ -2687,19 +2695,11 @@ static inline void get_random_mask_addr(u8 *buf, const u8 *addr, const u8 *mask)
  * @bssid: BSSID to be matched; may be all-zero BSSID in case of SSID match
  *	or no match (RSSI only)
  * @rssi_thold: don't report scan results below this threshold (in s32 dBm)
- * @per_band_rssi_thold: Minimum rssi threshold for each band to be applied
- *	for filtering out scan results received. Drivers advertise this support
- *	of band specific rssi based filtering through the feature capability
- *	%NL80211_EXT_FEATURE_SCHED_SCAN_BAND_SPECIFIC_RSSI_THOLD. These band
- *	specific rssi thresholds take precedence over rssi_thold, if specified.
- *	If not specified for any band, it will be assigned with rssi_thold of
- *	corresponding matchset.
  */
 struct cfg80211_match_set {
 	struct cfg80211_ssid ssid;
 	u8 bssid[ETH_ALEN];
 	s32 rssi_thold;
-	s32 per_band_rssi_thold[NUM_NL80211_BANDS];
 };
 
 /**
@@ -3051,6 +3051,7 @@ struct cfg80211_assoc_link {
  * @CONNECT_REQ_MLO_SUPPORT: Userspace indicates support for handling MLD links.
  *	Drivers shall disable MLO features for the current association if this
  *	flag is not set.
+ * @ASSOC_REQ_SPP_AMSDU: SPP A-MSDUs will be used on this connection (if any)
  */
 enum cfg80211_assoc_req_flags {
 	ASSOC_REQ_DISABLE_HT			= BIT(0),
@@ -3060,6 +3061,7 @@ enum cfg80211_assoc_req_flags {
 	ASSOC_REQ_DISABLE_HE			= BIT(4),
 	ASSOC_REQ_DISABLE_EHT			= BIT(5),
 	CONNECT_REQ_MLO_SUPPORT			= BIT(6),
+	ASSOC_REQ_SPP_AMSDU			= BIT(7),
 };
 
 /**
@@ -3225,8 +3227,8 @@ struct cfg80211_ibss_params {
  *
  * @behaviour: requested BSS selection behaviour.
  * @param: parameters for requestion behaviour.
- * @band_pref: preferred band for %NL80211_BSS_SELECT_ATTR_BAND_PREF.
- * @adjust: parameters for %NL80211_BSS_SELECT_ATTR_RSSI_ADJUST.
+ * @param.band_pref: preferred band for %NL80211_BSS_SELECT_ATTR_BAND_PREF.
+ * @param.adjust: parameters for %NL80211_BSS_SELECT_ATTR_RSSI_ADJUST.
  */
 struct cfg80211_bss_selection {
 	enum nl80211_bss_select_attr behaviour;
@@ -6063,7 +6065,6 @@ void wiphy_delayed_work_flush(struct wiphy *wiphy,
  *	wireless device if it has no netdev
  * @u: union containing data specific to @iftype
  * @connected: indicates if connected or not (STA mode)
- * @bssid: (private) Used by the internal configuration code
  * @wext: (private) Used by the internal wireless extensions compat code
  * @wext.ibss: (private) IBSS data part of wext handling
  * @wext.connect: (private) connection handling data
@@ -6083,8 +6084,6 @@ void wiphy_delayed_work_flush(struct wiphy *wiphy,
  * @mgmt_registrations: list of registrations for management frames
  * @mgmt_registrations_need_update: mgmt registrations were updated,
  *	need to propagate the update to the driver
- * @beacon_interval: beacon interval used on this device for transmitting
- *	beacons, 0 when not valid
  * @address: The address for this device, valid only if @netdev is %NULL
  * @is_running: true if this is a non-netdev device that has been started, e.g.
  *	the P2P Device.
@@ -7166,6 +7165,23 @@ int cfg80211_get_ies_channel_number(const u8 *ie, size_t ielen,
 				    enum nl80211_band band);
 
 /**
+ * cfg80211_ssid_eq - compare two SSIDs
+ * @a: first SSID
+ * @b: second SSID
+ *
+ * Return: %true if SSIDs are equal, %false otherwise.
+ */
+static inline bool
+cfg80211_ssid_eq(struct cfg80211_ssid *a, struct cfg80211_ssid *b)
+{
+	if (WARN_ON(!a || !b))
+		return false;
+	if (a->ssid_len != b->ssid_len)
+		return false;
+	return memcmp(a->ssid, b->ssid, a->ssid_len) ? false : true;
+}
+
+/**
  * cfg80211_inform_bss_data - inform cfg80211 of a new BSS
  *
  * @wiphy: the wiphy reporting the BSS
@@ -7346,8 +7362,6 @@ void cfg80211_auth_timeout(struct net_device *dev, const u8 *addr);
 
 /**
  * struct cfg80211_rx_assoc_resp_data - association response data
- * @bss: the BSS that association was requested with, ownership of the pointer
- *	moves to cfg80211 in the call to cfg80211_rx_assoc_resp()
  * @buf: (Re)Association Response frame (header + body)
  * @len: length of the frame data
  * @uapsd_queues: bitmap of queues configured for uapsd. Same format
@@ -7357,6 +7371,8 @@ void cfg80211_auth_timeout(struct net_device *dev, const u8 *addr);
  * @ap_mld_addr: AP MLD address (in case of MLO)
  * @links: per-link information indexed by link ID, use links[0] for
  *	non-MLO connections
+ * @links.bss: the BSS that association was requested with, ownership of the
+ *      pointer moves to cfg80211 in the call to cfg80211_rx_assoc_resp()
  * @links.status: Set this (along with a BSS pointer) for links that
  *	were rejected by the AP.
  */
@@ -9374,5 +9390,61 @@ bool cfg80211_valid_disable_subchannel_bitmap(u16 *bitmap,
  * Also note that the wdev mutex must be held.
  */
 void cfg80211_links_removed(struct net_device *dev, u16 link_mask);
+
+/**
+ * cfg80211_schedule_channels_check - schedule regulatory check if needed
+ * @wdev: the wireless device to check
+ *
+ * In case the device supports NO_IR or DFS relaxations, schedule regulatory
+ * channels check, as previous concurrent operation conditions may not
+ * hold anymore.
+ */
+void cfg80211_schedule_channels_check(struct wireless_dev *wdev);
+
+#ifdef CONFIG_CFG80211_DEBUGFS
+/**
+ * wiphy_locked_debugfs_read - do a locked read in debugfs
+ * @wiphy: the wiphy to use
+ * @file: the file being read
+ * @buf: the buffer to fill and then read from
+ * @bufsize: size of the buffer
+ * @userbuf: the user buffer to copy to
+ * @count: read count
+ * @ppos: read position
+ * @handler: the read handler to call (under wiphy lock)
+ * @data: additional data to pass to the read handler
+ */
+ssize_t wiphy_locked_debugfs_read(struct wiphy *wiphy, struct file *file,
+				  char *buf, size_t bufsize,
+				  char __user *userbuf, size_t count,
+				  loff_t *ppos,
+				  ssize_t (*handler)(struct wiphy *wiphy,
+						     struct file *file,
+						     char *buf,
+						     size_t bufsize,
+						     void *data),
+				  void *data);
+
+/**
+ * wiphy_locked_debugfs_write - do a locked write in debugfs
+ * @wiphy: the wiphy to use
+ * @file: the file being written to
+ * @buf: the buffer to copy the user data to
+ * @bufsize: size of the buffer
+ * @userbuf: the user buffer to copy from
+ * @count: read count
+ * @handler: the write handler to call (under wiphy lock)
+ * @data: additional data to pass to the write handler
+ */
+ssize_t wiphy_locked_debugfs_write(struct wiphy *wiphy, struct file *file,
+				   char *buf, size_t bufsize,
+				   const char __user *userbuf, size_t count,
+				   ssize_t (*handler)(struct wiphy *wiphy,
+						      struct file *file,
+						      char *buf,
+						      size_t count,
+						      void *data),
+				   void *data);
+#endif
 
 #endif /* __NET_CFG80211_H */

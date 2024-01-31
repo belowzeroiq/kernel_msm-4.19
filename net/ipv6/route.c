@@ -2085,12 +2085,12 @@ static void rt6_age_examine_exception(struct rt6_exception_bucket *bucket,
 	 */
 	if (!(rt->rt6i_flags & RTF_EXPIRES)) {
 		if (time_after_eq(now, rt->dst.lastuse + gc_args->timeout)) {
-			RT6_TRACE("aging clone %p\n", rt);
+			pr_debug("aging clone %p\n", rt);
 			rt6_remove_exception(bucket, rt6_ex);
 			return;
 		}
 	} else if (time_after(jiffies, rt->dst.expires)) {
-		RT6_TRACE("purging expired route %p\n", rt);
+		pr_debug("purging expired route %p\n", rt);
 		rt6_remove_exception(bucket, rt6_ex);
 		return;
 	}
@@ -2101,8 +2101,8 @@ static void rt6_age_examine_exception(struct rt6_exception_bucket *bucket,
 		neigh = __ipv6_neigh_lookup_noref(rt->dst.dev, &rt->rt6i_gateway);
 
 		if (!(neigh && (neigh->flags & NTF_ROUTER))) {
-			RT6_TRACE("purging route %p via non-router but gateway\n",
-				  rt);
+			pr_debug("purging route %p via non-router but gateway\n",
+				 rt);
 			rt6_remove_exception(bucket, rt6_ex);
 			return;
 		}
@@ -3763,10 +3763,10 @@ static struct fib6_info *ip6_route_info_create(struct fib6_config *cfg,
 		rt->dst_nocount = true;
 
 	if (cfg->fc_flags & RTF_EXPIRES)
-		fib6_set_expires_locked(rt, jiffies +
-					clock_t_to_jiffies(cfg->fc_expires));
+		fib6_set_expires(rt, jiffies +
+				clock_t_to_jiffies(cfg->fc_expires));
 	else
-		fib6_clean_expires_locked(rt);
+		fib6_clean_expires(rt);
 
 	if (cfg->fc_protocol == RTPROT_UNSPEC)
 		cfg->fc_protocol = RTPROT_BOOT;

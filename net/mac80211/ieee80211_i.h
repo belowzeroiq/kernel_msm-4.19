@@ -439,7 +439,9 @@ struct ieee80211_mgd_assoc_data {
 	bool need_beacon;
 	bool synced;
 	bool timeout_started;
+	bool comeback; /* whether the AP has requested association comeback */
 	bool s1g;
+	bool spp_amsdu;
 
 	unsigned int assoc_link_id;
 
@@ -578,6 +580,10 @@ struct ieee80211_if_managed {
 	/* TID-to-link mapping support */
 	struct wiphy_delayed_work ttlm_work;
 	struct ieee80211_adv_ttlm_info ttlm_info;
+
+	/* dialog token enumerator for neg TTLM request */
+	u8 dialog_token_alloc;
+	struct wiphy_delayed_work neg_ttlm_timeout_work;
 };
 
 struct ieee80211_if_ibss {
@@ -1775,10 +1781,7 @@ static inline bool txq_has_queue(struct ieee80211_txq *txq)
 static inline bool
 ieee80211_have_rx_timestamp(struct ieee80211_rx_status *status)
 {
-	WARN_ON_ONCE(status->flag & RX_FLAG_MACTIME_START &&
-		     status->flag & RX_FLAG_MACTIME_END);
-	return !!(status->flag & (RX_FLAG_MACTIME_START | RX_FLAG_MACTIME_END |
-				  RX_FLAG_MACTIME_PLCP_START));
+	return status->flag & RX_FLAG_MACTIME;
 }
 
 void ieee80211_vif_inc_num_mcast(struct ieee80211_sub_if_data *sdata);
@@ -2605,9 +2608,25 @@ ieee80211_eht_cap_ie_to_sta_eht_cap(struct ieee80211_sub_if_data *sdata,
 				    const struct ieee80211_eht_cap_elem *eht_cap_ie_elem,
 				    u8 eht_cap_len,
 				    struct link_sta_info *link_sta);
+void ieee80211_process_neg_ttlm_req(struct ieee80211_sub_if_data *sdata,
+				    struct ieee80211_mgmt *mgmt, size_t len);
+void ieee80211_process_neg_ttlm_res(struct ieee80211_sub_if_data *sdata,
+				    struct ieee80211_mgmt *mgmt, size_t len);
+int ieee80211_req_neg_ttlm(struct ieee80211_sub_if_data *sdata,
+			   struct cfg80211_ttlm_params *params);
 
 void ieee80211_check_wbrf_support(struct ieee80211_local *local);
 void ieee80211_add_wbrf(struct ieee80211_local *local, struct cfg80211_chan_def *chandef);
 void ieee80211_remove_wbrf(struct ieee80211_local *local, struct cfg80211_chan_def *chandef);
+
+#if IS_ENABLED(CONFIG_MAC80211_KUNIT_TEST)
+#define EXPORT_SYMBOL_IF_MAC80211_KUNIT(sym) EXPORT_SYMBOL_IF_KUNIT(sym)
+#define VISIBLE_IF_MAC80211_KUNIT
+ieee80211_rx_result
+ieee80211_drop_unencrypted_mgmt(struct ieee80211_rx_data *rx);
+#else
+#define EXPORT_SYMBOL_IF_MAC80211_KUNIT(sym)
+#define VISIBLE_IF_MAC80211_KUNIT static
+#endif
 
 #endif /* IEEE80211_I_H */

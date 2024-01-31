@@ -192,6 +192,7 @@ enum rtl_registers {
 					/* No threshold before first PCI xfer */
 #define	RX_FIFO_THRESH			(7 << RXCFG_FIFO_SHIFT)
 #define	RX_EARLY_OFF			(1 << 11)
+#define	RX_PAUSE_SLOT_ON		(1 << 11)	/* 8125b and later */
 #define	RXCFG_DMA_SHIFT			8
 					/* Unlimited maximum PCI burst. */
 #define	RX_DMA_BURST			(7 << RXCFG_DMA_SHIFT)
@@ -284,6 +285,7 @@ enum rtl8168_8101_registers {
 };
 
 enum rtl8168_registers {
+	LED_CTRL		= 0x18,
 	LED_FREQ		= 0x1a,
 	EEE_LED			= 0x1b,
 	ERIDR			= 0x70,
@@ -575,6 +577,7 @@ struct rtl8169_tc_offsets {
 enum rtl_flag {
 	RTL_FLAG_TASK_ENABLED = 0,
 	RTL_FLAG_TASK_RESET_PENDING,
+	RTL_FLAG_TASK_RESET_NO_QUEUE_WAKE,
 	RTL_FLAG_TASK_TX_TIMEOUT,
 	RTL_FLAG_MAX
 };
@@ -614,6 +617,7 @@ struct rtl8169_private {
 
 	raw_spinlock_t config25_lock;
 	raw_spinlock_t mac_ocp_lock;
+	struct mutex led_lock;	/* serialize LED ctrl RMW access */
 
 	raw_spinlock_t cfg9346_usage_lock;
 	int cfg9346_usage_count;
@@ -785,6 +789,62 @@ static const struct rtl_cond name = {			\
 };							\
 							\
 static bool name ## _check(struct rtl8169_private *tp)
+
+int rtl8168_led_mod_ctrl(struct rtl8169_private *tp, u16 mask, u16 val)
+{
+	struct device *dev = tp_to_dev(tp);
+	int ret;
+
+	ret = pm_runtime_resume_and_get(dev);
+	if (ret < 0)
+		return ret;
+
+	mutex_lock(&tp->led_lock);
+	RTL_W16(tp, LED_CTRL, (RTL_R16(tp, LED_CTRL) & ~mask) | val);
+	mutex_unlock(&tp->led_lock);
+
+	pm_runtime_put_sync(dev);
+
+	return 0;
+}
+
+int rtl8168_get_led_mode(struct rtl8169_private *tp)
+{
+	struct device *dev = tp_to_dev(tp);
+	int ret;
+
+	ret = pm_runtime_resume_and_get(dev);
+	if (ret < 0)
+		return ret;
+
+	ret = RTL_R16(tp, LED_CTRL);
+
+	pm_runtime_put_sync(dev);
+
+	return ret;
+}
+
+void r8169_get_led_name(struct rtl8169_private *tp, int idx,
+			char *buf, int buf_len)
+{
+	struct pci_dev *pdev = tp->pci_dev;
+	char pdom[8], pfun[8];
+	int domain;
+
+	domain = pci_domain_nr(pdev->bus);
+	if (domain)
+		snprintf(pdom, sizeof(pdom), "P%d", domain);
+	else
+		pdom[0] = '\0';
+
+	if (pdev->multifunction)
+		snprintf(pfun, sizeof(pfun), "f%d", PCI_FUNC(pdev->devfn));
+	else
+		pfun[0] = '\0';
+
+	snprintf(buf, buf_len, "en%sp%ds%d%s-%d::lan", pdom, pdev->bus->number,
+		 PCI_SLOT(pdev->devfn), pfun, idx);
+}
 
 static void r8168fp_adjust_ocp_cmd(struct rtl8169_private *tp, u32 *cmd, int type)
 {
@@ -1205,7 +1265,7 @@ static void rtl8168ep_driver_start(struct rtl8169_private *tp)
 {
 	r8168ep_ocp_write(tp, 0x01, 0x180, OOB_CMD_DRIVER_START);
 	r8168ep_ocp_write(tp, 0x01, 0x30, r8168ep_ocp_read(tp, 0x30) | 0x01);
-	rtl_loop_wait_high(tp, &rtl_ep_ocp_read_cond, 10000, 10);
+	rtl_loop_wait_high(tp, &rtl_ep_ocp_read_cond, 10000, 30);
 }
 
 static void rtl8168_driver_start(struct rtl8169_private *tp)
@@ -2304,8 +2364,12 @@ static void rtl_init_rxcfg(struct rtl8169_private *tp)
 	case RTL_GIGA_MAC_VER_40 ... RTL_GIGA_MAC_VER_53:
 		RTL_W32(tp, RxConfig, RX128_INT_EN | RX_MULTI_EN | RX_DMA_BURST | RX_EARLY_OFF);
 		break;
-	case RTL_GIGA_MAC_VER_61 ... RTL_GIGA_MAC_VER_63:
+	case RTL_GIGA_MAC_VER_61:
 		RTL_W32(tp, RxConfig, RX_FETCH_DFLT_8125 | RX_DMA_BURST);
+		break;
+	case RTL_GIGA_MAC_VER_63:
+		RTL_W32(tp, RxConfig, RX_FETCH_DFLT_8125 | RX_DMA_BURST |
+			RX_PAUSE_SLOT_ON);
 		break;
 	default:
 		RTL_W32(tp, RxConfig, RX128_INT_EN | RX_DMA_BURST);
@@ -4496,6 +4560,8 @@ static void rtl_task(struct work_struct *work)
 reset:
 		rtl_reset_work(tp);
 		netif_wake_queue(tp->dev);
+	} else if (test_and_clear_bit(RTL_FLAG_TASK_RESET_NO_QUEUE_WAKE, tp->wk.flags)) {
+		rtl_reset_work(tp);
 	}
 out_unlock:
 	rtnl_unlock();
@@ -4529,7 +4595,7 @@ static void r8169_phylink_handler(struct net_device *ndev)
 	} else {
 		/* In few cases rx is broken after link-down otherwise */
 		if (rtl_is_8125(tp))
-			rtl_reset_work(tp);
+			rtl_schedule_task(tp, RTL_FLAG_TASK_RESET_NO_QUEUE_WAKE);
 		pm_runtime_idle(d);
 	}
 
@@ -4605,7 +4671,7 @@ static int rtl8169_close(struct net_device *dev)
 	rtl8169_down(tp);
 	rtl8169_rx_clear(tp);
 
-	cancel_work_sync(&tp->wk.work);
+	cancel_work(&tp->wk.work);
 
 	free_irq(tp->irq, tp);
 
@@ -4838,6 +4904,8 @@ static void rtl_remove_one(struct pci_dev *pdev)
 
 	if (pci_dev_run_wake(pdev))
 		pm_runtime_get_noresume(&pdev->dev);
+
+	cancel_work_sync(&tp->wk.work);
 
 	unregister_netdev(tp->dev);
 
@@ -5131,6 +5199,7 @@ static int rtl_init_one(struct pci_dev *pdev, const struct pci_device_id *ent)
 	raw_spin_lock_init(&tp->cfg9346_usage_lock);
 	raw_spin_lock_init(&tp->config25_lock);
 	raw_spin_lock_init(&tp->mac_ocp_lock);
+	mutex_init(&tp->led_lock);
 
 	dev->tstats = devm_netdev_alloc_pcpu_stats(&pdev->dev,
 						   struct pcpu_sw_netstats);
@@ -5286,6 +5355,11 @@ static int rtl_init_one(struct pci_dev *pdev, const struct pci_device_id *ent)
 	rc = register_netdev(dev);
 	if (rc)
 		return rc;
+
+	if (IS_ENABLED(CONFIG_R8169_LEDS) &&
+	    tp->mac_version > RTL_GIGA_MAC_VER_06 &&
+	    tp->mac_version < RTL_GIGA_MAC_VER_61)
+		rtl8168_init_leds(dev);
 
 	netdev_info(dev, "%s, %pM, XID %03x, IRQ %d\n",
 		    rtl_chip_infos[chipset].name, dev->dev_addr, xid, tp->irq);

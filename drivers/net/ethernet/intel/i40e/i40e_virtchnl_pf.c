@@ -154,6 +154,32 @@ void i40e_vc_notify_reset(struct i40e_pf *pf)
 			     (u8 *)&pfe, sizeof(struct virtchnl_pf_event));
 }
 
+#ifdef CONFIG_PCI_IOV
+void i40e_restore_all_vfs_msi_state(struct pci_dev *pdev)
+{
+	u16 vf_id;
+	u16 pos;
+
+	/* Continue only if this is a PF */
+	if (!pdev->is_physfn)
+		return;
+
+	if (!pci_num_vf(pdev))
+		return;
+
+	pos = pci_find_ext_capability(pdev, PCI_EXT_CAP_ID_SRIOV);
+	if (pos) {
+		struct pci_dev *vf_dev = NULL;
+
+		pci_read_config_word(pdev, pos + PCI_SRIOV_VF_DID, &vf_id);
+		while ((vf_dev = pci_get_device(pdev->vendor, vf_id, vf_dev))) {
+			if (vf_dev->is_virtfn && vf_dev->physfn == pdev)
+				pci_restore_msi_state(vf_dev);
+		}
+	}
+}
+#endif /* CONFIG_PCI_IOV */
+
 /**
  * i40e_vc_notify_vf_reset
  * @vf: pointer to the VF structure
@@ -474,10 +500,10 @@ static void i40e_release_rdma_qvlist(struct i40e_vf *vf)
 			 */
 			reg_idx = (msix_vf - 1) * vf->vf_id + qv_info->ceq_idx;
 			reg = rd32(hw, I40E_VPINT_CEQCTL(reg_idx));
-			next_q_index = (reg & I40E_VPINT_CEQCTL_NEXTQ_INDX_MASK)
-					>> I40E_VPINT_CEQCTL_NEXTQ_INDX_SHIFT;
-			next_q_type = (reg & I40E_VPINT_CEQCTL_NEXTQ_TYPE_MASK)
-					>> I40E_VPINT_CEQCTL_NEXTQ_TYPE_SHIFT;
+			next_q_index = FIELD_GET(I40E_VPINT_CEQCTL_NEXTQ_INDX_MASK,
+						 reg);
+			next_q_type = FIELD_GET(I40E_VPINT_CEQCTL_NEXTQ_TYPE_MASK,
+						reg);
 
 			reg_idx = ((msix_vf - 1) * vf->vf_id) + (v_idx - 1);
 			reg = (next_q_index &
@@ -555,10 +581,10 @@ i40e_config_rdma_qvlist(struct i40e_vf *vf,
 		 * queue on top. Also link it with the new queue in CEQCTL.
 		 */
 		reg = rd32(hw, I40E_VPINT_LNKLSTN(reg_idx));
-		next_q_idx = ((reg & I40E_VPINT_LNKLSTN_FIRSTQ_INDX_MASK) >>
-				I40E_VPINT_LNKLSTN_FIRSTQ_INDX_SHIFT);
-		next_q_type = ((reg & I40E_VPINT_LNKLSTN_FIRSTQ_TYPE_MASK) >>
-				I40E_VPINT_LNKLSTN_FIRSTQ_TYPE_SHIFT);
+		next_q_idx = FIELD_GET(I40E_VPINT_LNKLSTN_FIRSTQ_INDX_MASK,
+				       reg);
+		next_q_type = FIELD_GET(I40E_VPINT_LNKLSTN_FIRSTQ_TYPE_MASK,
+					reg);
 
 		if (qv_info->ceq_idx != I40E_QUEUE_INVALID_IDX) {
 			reg_idx = (msix_vf - 1) * vf->vf_id + qv_info->ceq_idx;
@@ -659,11 +685,9 @@ static int i40e_config_vsi_tx_queue(struct i40e_vf *vf, u16 vsi_id,
 
 	/* associate this queue with the PCI VF function */
 	qtx_ctl = I40E_QTX_CTL_VF_QUEUE;
-	qtx_ctl |= ((hw->pf_id << I40E_QTX_CTL_PF_INDX_SHIFT)
-		    & I40E_QTX_CTL_PF_INDX_MASK);
-	qtx_ctl |= (((vf->vf_id + hw->func_caps.vf_base_id)
-		     << I40E_QTX_CTL_VFVM_INDX_SHIFT)
-		    & I40E_QTX_CTL_VFVM_INDX_MASK);
+	qtx_ctl |= FIELD_PREP(I40E_QTX_CTL_PF_INDX_MASK, hw->pf_id);
+	qtx_ctl |= FIELD_PREP(I40E_QTX_CTL_VFVM_INDX_MASK,
+			      vf->vf_id + hw->func_caps.vf_base_id);
 	wr32(hw, I40E_QTX_CTL(pf_queue_id), qtx_ctl);
 	i40e_flush(hw);
 
@@ -2581,6 +2605,14 @@ static int i40e_vc_enable_queues_msg(struct i40e_vf *vf, u8 *msg)
 	int aq_ret = 0;
 	int i;
 
+	if (vf->is_disabled_from_host) {
+		aq_ret = -EPERM;
+		dev_info(&pf->pdev->dev,
+			 "Admin has disabled VF %d, will not enable queues\n",
+			 vf->vf_id);
+		goto error_param;
+	}
+
 	if (!test_bit(I40E_VF_STATE_ACTIVE, &vf->vf_states)) {
 		aq_ret = -EINVAL;
 		goto error_param;
@@ -3521,16 +3553,16 @@ static int i40e_validate_cloud_filter(struct i40e_vf *vf,
 	bool found = false;
 	int bkt;
 
-	if (!tc_filter->action) {
+	if (tc_filter->action != VIRTCHNL_ACTION_TC_REDIRECT) {
 		dev_info(&pf->pdev->dev,
-			 "VF %d: Currently ADq doesn't support Drop Action\n",
-			 vf->vf_id);
+			 "VF %d: ADQ doesn't support this action (%d)\n",
+			 vf->vf_id, tc_filter->action);
 		goto err;
 	}
 
 	/* action_meta is TC number here to which the filter is applied */
 	if (!tc_filter->action_meta ||
-	    tc_filter->action_meta > I40E_MAX_VF_VSI) {
+	    tc_filter->action_meta > vf->num_tc) {
 		dev_info(&pf->pdev->dev, "VF %d: Invalid TC number %u\n",
 			 vf->vf_id, tc_filter->action_meta);
 		goto err;
@@ -4675,9 +4707,8 @@ int i40e_ndo_get_vf_config(struct net_device *netdev,
 
 	ivi->max_tx_rate = vf->tx_rate;
 	ivi->min_tx_rate = 0;
-	ivi->vlan = le16_to_cpu(vsi->info.pvid) & I40E_VLAN_MASK;
-	ivi->qos = (le16_to_cpu(vsi->info.pvid) & I40E_PRIORITY_MASK) >>
-		   I40E_VLAN_PRIORITY_SHIFT;
+	ivi->vlan = le16_get_bits(vsi->info.pvid, I40E_VLAN_MASK);
+	ivi->qos = le16_get_bits(vsi->info.pvid, I40E_PRIORITY_MASK);
 	if (vf->link_forced == false)
 		ivi->linkstate = IFLA_VF_LINK_STATE_AUTO;
 	else if (vf->link_up == true)
@@ -4708,9 +4739,12 @@ int i40e_ndo_set_vf_link_state(struct net_device *netdev, int vf_id, int link)
 	struct i40e_link_status *ls = &pf->hw.phy.link_info;
 	struct virtchnl_pf_event pfe;
 	struct i40e_hw *hw = &pf->hw;
+	struct i40e_vsi *vsi;
+	unsigned long q_map;
 	struct i40e_vf *vf;
 	int abs_vf_id;
 	int ret = 0;
+	int tmp;
 
 	if (test_and_set_bit(__I40E_VIRTCHNL_OP_PENDING, pf->state)) {
 		dev_warn(&pf->pdev->dev, "Unable to configure VFs, other operation is pending.\n");
@@ -4733,17 +4767,38 @@ int i40e_ndo_set_vf_link_state(struct net_device *netdev, int vf_id, int link)
 	switch (link) {
 	case IFLA_VF_LINK_STATE_AUTO:
 		vf->link_forced = false;
+		vf->is_disabled_from_host = false;
+		/* reset needed to reinit VF resources */
+		i40e_vc_reset_vf(vf, true);
 		i40e_set_vf_link_state(vf, &pfe, ls);
 		break;
 	case IFLA_VF_LINK_STATE_ENABLE:
 		vf->link_forced = true;
 		vf->link_up = true;
+		vf->is_disabled_from_host = false;
+		/* reset needed to reinit VF resources */
+		i40e_vc_reset_vf(vf, true);
 		i40e_set_vf_link_state(vf, &pfe, ls);
 		break;
 	case IFLA_VF_LINK_STATE_DISABLE:
 		vf->link_forced = true;
 		vf->link_up = false;
 		i40e_set_vf_link_state(vf, &pfe, ls);
+
+		vsi = pf->vsi[vf->lan_vsi_idx];
+		q_map = BIT(vsi->num_queue_pairs) - 1;
+
+		vf->is_disabled_from_host = true;
+
+		/* Try to stop both Tx&Rx rings even if one of the calls fails
+		 * to ensure we stop the rings even in case of errors.
+		 * If any of them returns with an error then the first
+		 * error that occurred will be returned.
+		 */
+		tmp = i40e_ctrl_vf_tx_rings(vsi, q_map, false);
+		ret = i40e_ctrl_vf_rx_rings(vsi, q_map, false);
+
+		ret = tmp ? tmp : ret;
 		break;
 	default:
 		ret = -EINVAL;

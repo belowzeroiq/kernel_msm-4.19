@@ -1068,6 +1068,9 @@ struct iwl_trans_txqs {
  * @pcie_link_speed: current PCIe link speed (%PCI_EXP_LNKSTA_CLS_*),
  *	only valid for discrete (not integrated) NICs
  * @invalid_tx_cmd: invalid TX command buffer
+ * @reduced_cap_sku: reduced capability supported SKU
+ * @no_160: device not supporting 160 MHz
+ * @step_urm: STEP is in URM, no support for MCS>9 in 320 MHz
  */
 struct iwl_trans {
 	bool csme_own;
@@ -1090,6 +1093,8 @@ struct iwl_trans {
 	u32 hw_id;
 	char hw_id_str[52];
 	u32 sku_id[3];
+	bool reduced_cap_sku;
+	u8 no_160:1, step_urm:1;
 
 	u8 rx_mpdu_cmd, rx_mpdu_cmd_hdr_size;
 
@@ -1316,7 +1321,7 @@ iwl_trans_get_rxq_dma_data(struct iwl_trans *trans, int queue,
 			   struct iwl_trans_rxq_dma_data *data)
 {
 	if (WARN_ON_ONCE(!trans->ops->rxq_dma_data))
-		return -ENOTSUPP;
+		return -EOPNOTSUPP;
 
 	return trans->ops->rxq_dma_data(trans, queue, data);
 }
@@ -1338,7 +1343,7 @@ iwl_trans_txq_alloc(struct iwl_trans *trans,
 	might_sleep();
 
 	if (WARN_ON_ONCE(!trans->ops->txq_alloc))
-		return -ENOTSUPP;
+		return -EOPNOTSUPP;
 
 	if (WARN_ON_ONCE(trans->state != IWL_TRANS_FW_ALIVE)) {
 		IWL_ERR(trans, "%s bad state = %d\n", __func__, trans->state);
@@ -1404,7 +1409,7 @@ static inline int iwl_trans_wait_tx_queues_empty(struct iwl_trans *trans,
 						 u32 txqs)
 {
 	if (WARN_ON_ONCE(!trans->ops->wait_tx_queues_empty))
-		return -ENOTSUPP;
+		return -EOPNOTSUPP;
 
 	/* No need to wait if the firmware is not alive */
 	if (trans->state != IWL_TRANS_FW_ALIVE) {
@@ -1418,7 +1423,7 @@ static inline int iwl_trans_wait_tx_queues_empty(struct iwl_trans *trans,
 static inline int iwl_trans_wait_txq_empty(struct iwl_trans *trans, int queue)
 {
 	if (WARN_ON_ONCE(!trans->ops->wait_txq_empty))
-		return -ENOTSUPP;
+		return -EOPNOTSUPP;
 
 	if (WARN_ON_ONCE(trans->state != IWL_TRANS_FW_ALIVE)) {
 		IWL_ERR(trans, "%s bad state = %d\n", __func__, trans->state);

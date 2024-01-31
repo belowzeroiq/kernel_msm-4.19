@@ -20,7 +20,6 @@ try_modprobe act_ct
 try_modprobe act_ctinfo
 try_modprobe act_gact
 try_modprobe act_gate
-try_modprobe act_ipt
 try_modprobe act_mirred
 try_modprobe act_mpls
 try_modprobe act_nat
@@ -64,5 +63,4 @@ try_modprobe sch_hfsc
 try_modprobe sch_hhf
 try_modprobe sch_htb
 try_modprobe sch_teql
-./tdc.py -J`nproc` -c actions
-./tdc.py -J`nproc` -c qdisc
+./tdc.py -J`nproc`

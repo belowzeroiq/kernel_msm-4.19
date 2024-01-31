@@ -342,6 +342,7 @@ struct ieee80211_vif_chanctx_switch {
  *	status changed.
  * @BSS_CHANGED_EHT_PUNCTURING: The channel puncturing bitmap changed.
  * @BSS_CHANGED_MLD_VALID_LINKS: MLD valid links status changed.
+ * @BSS_CHANGED_MLD_TTLM: TID to link mapping was changed
  */
 enum ieee80211_bss_change {
 	BSS_CHANGED_ASSOC		= 1<<0,
@@ -378,6 +379,7 @@ enum ieee80211_bss_change {
 	BSS_CHANGED_UNSOL_BCAST_PROBE_RESP = 1<<31,
 	BSS_CHANGED_EHT_PUNCTURING	= BIT_ULL(32),
 	BSS_CHANGED_MLD_VALID_LINKS	= BIT_ULL(33),
+	BSS_CHANGED_MLD_TTLM		= BIT_ULL(34),
 
 	/* when adding here, make sure to change ieee80211_reconfig */
 };
@@ -476,9 +478,9 @@ struct ieee80211_ba_event {
 /**
  * struct ieee80211_event - event to be sent to the driver
  * @type: The event itself. See &enum ieee80211_event_type.
- * @rssi: relevant if &type is %RSSI_EVENT
- * @mlme: relevant if &type is %AUTH_EVENT
- * @ba: relevant if &type is %BAR_RX_EVENT or %BA_FRAME_TIMEOUT
+ * @u.rssi: relevant if &type is %RSSI_EVENT
+ * @u.mlme: relevant if &type is %AUTH_EVENT
+ * @u.ba: relevant if &type is %BAR_RX_EVENT or %BA_FRAME_TIMEOUT
  * @u:union holding the fields above
  */
 struct ieee80211_event {
@@ -541,8 +543,6 @@ struct ieee80211_fils_discovery {
  * @link_id: link ID, or 0 for non-MLO
  * @htc_trig_based_pkt_ext: default PE in 4us units, if BSS supports HE
  * @uora_exists: is the UORA element advertised by AP
- * @ack_enabled: indicates support to receive a multi-TID that solicits either
- *	ACK, BACK or both
  * @uora_ocw_range: UORA element's OCW Range field
  * @frame_time_rts_th: HE duration RTS threshold, in units of 32us
  * @he_support: does this BSS support HE
@@ -1150,11 +1150,6 @@ ieee80211_rate_get_vht_nss(const struct ieee80211_tx_rate *rate)
  * @ack: union part for pure ACK data
  * @ack.cookie: cookie for the ACK
  * @driver_data: array of driver_data pointers
- * @ampdu_ack_len: number of acked aggregated frames.
- * 	relevant only if IEEE80211_TX_STAT_AMPDU was set.
- * @ampdu_len: number of aggregated frames.
- * 	relevant only if IEEE80211_TX_STAT_AMPDU was set.
- * @ack_signal: signal strength of the ACK frame
  */
 struct ieee80211_tx_info {
 	/* common information */
@@ -1362,6 +1357,9 @@ ieee80211_tx_info_clear_status(struct ieee80211_tx_info *info)
  *	the frame.
  * @RX_FLAG_FAILED_PLCP_CRC: Set this flag if the PCLP check failed on
  *	the frame.
+ * @RX_FLAG_MACTIME: The timestamp passed in the RX status (@mactime
+ *	field) is valid if this field is non-zero, and the position
+ *	where the timestamp was sampled depends on the value.
  * @RX_FLAG_MACTIME_START: The timestamp passed in the RX status (@mactime
  *	field) is valid and contains the time the first symbol of the MPDU
  *	was received. This is useful in monitor mode and for proper IBSS
@@ -1371,6 +1369,11 @@ ieee80211_tx_info_clear_status(struct ieee80211_tx_info *info)
  *	(including FCS) was received.
  * @RX_FLAG_MACTIME_PLCP_START: The timestamp passed in the RX status (@mactime
  *	field) is valid and contains the time the SYNC preamble was received.
+ * @RX_FLAG_MACTIME_IS_RTAP_TS64: The timestamp passed in the RX status @mactime
+ *	is only for use in the radiotap timestamp header, not otherwise a valid
+ *	@mactime value. Note this is a separate flag so that we continue to see
+ *	%RX_FLAG_MACTIME as unset. Also note that in this case the timestamp is
+ *	reported to be 64 bits wide, not just 32.
  * @RX_FLAG_NO_SIGNAL_VAL: The signal strength value is not present.
  *	Valid only for data frames (mainly A-MPDU)
  * @RX_FLAG_AMPDU_DETAILS: A-MPDU details are known, in particular the reference
@@ -1441,12 +1444,12 @@ ieee80211_tx_info_clear_status(struct ieee80211_tx_info *info)
 enum mac80211_rx_flags {
 	RX_FLAG_MMIC_ERROR		= BIT(0),
 	RX_FLAG_DECRYPTED		= BIT(1),
-	RX_FLAG_MACTIME_PLCP_START	= BIT(2),
+	RX_FLAG_ONLY_MONITOR		= BIT(2),
 	RX_FLAG_MMIC_STRIPPED		= BIT(3),
 	RX_FLAG_IV_STRIPPED		= BIT(4),
 	RX_FLAG_FAILED_FCS_CRC		= BIT(5),
 	RX_FLAG_FAILED_PLCP_CRC 	= BIT(6),
-	RX_FLAG_MACTIME_START		= BIT(7),
+	RX_FLAG_MACTIME_IS_RTAP_TS64	= BIT(7),
 	RX_FLAG_NO_SIGNAL_VAL		= BIT(8),
 	RX_FLAG_AMPDU_DETAILS		= BIT(9),
 	RX_FLAG_PN_VALIDATED		= BIT(10),
@@ -1455,8 +1458,10 @@ enum mac80211_rx_flags {
 	RX_FLAG_AMPDU_IS_LAST		= BIT(13),
 	RX_FLAG_AMPDU_DELIM_CRC_ERROR	= BIT(14),
 	RX_FLAG_AMPDU_DELIM_CRC_KNOWN	= BIT(15),
-	RX_FLAG_MACTIME_END		= BIT(16),
-	RX_FLAG_ONLY_MONITOR		= BIT(17),
+	RX_FLAG_MACTIME			= BIT(16) | BIT(17),
+	RX_FLAG_MACTIME_PLCP_START	= 1 << 16,
+	RX_FLAG_MACTIME_START		= 2 << 16,
+	RX_FLAG_MACTIME_END		= 3 << 16,
 	RX_FLAG_SKIP_MONITOR		= BIT(18),
 	RX_FLAG_AMSDU_MORE		= BIT(19),
 	RX_FLAG_RADIOTAP_TLV_AT_END	= BIT(20),
@@ -1805,9 +1810,11 @@ enum ieee80211_offload_flags {
  * @ps: power-save mode (STA only). This flag is NOT affected by
  *	offchannel/dynamic_ps operations.
  * @aid: association ID number, valid only when @assoc is true
- * @eml_cap: EML capabilities as described in P802.11be_D2.2 Figure 9-1002k.
+ * @eml_cap: EML capabilities as described in P802.11be_D4.1 Figure 9-1001j.
  * @eml_med_sync_delay: Medium Synchronization delay as described in
- *	P802.11be_D2.2 Figure 9-1002j.
+ *	P802.11be_D4.1 Figure 9-1001i.
+ * @mld_capa_op: MLD Capabilities and Operations per P802.11be_D4.1
+ *	Figure 9-1001k
  * @arp_addr_list: List of IPv4 addresses for hardware ARP filtering. The
  *	may filter ARP queries targeted for other addresses than listed here.
  *	The driver must allow ARP queries targeted for all address listed here
@@ -1832,6 +1839,7 @@ struct ieee80211_vif_cfg {
 	u16 aid;
 	u16 eml_cap;
 	u16 eml_med_sync_delay;
+	u16 mld_capa_op;
 
 	__be32 arp_addr_list[IEEE80211_BSS_ARP_ADDR_LIST_LEN];
 	int arp_addr_cnt;
@@ -1840,6 +1848,35 @@ struct ieee80211_vif_cfg {
 	bool s1g;
 	bool idle;
 	u8 ap_addr[ETH_ALEN] __aligned(2);
+};
+
+#define IEEE80211_TTLM_NUM_TIDS 8
+
+/**
+ * struct ieee80211_neg_ttlm - negotiated TID to link map info
+ *
+ * @downlink: bitmap of active links per TID for downlink, or 0 if mapping for
+ *	this TID is not included.
+ * @uplink: bitmap of active links per TID for uplink, or 0 if mapping for this
+ *	TID is not included.
+ * @valid: info is valid or not.
+ */
+struct ieee80211_neg_ttlm {
+	u16 downlink[IEEE80211_TTLM_NUM_TIDS];
+	u16 uplink[IEEE80211_TTLM_NUM_TIDS];
+	bool valid;
+};
+
+/**
+ * enum ieee80211_neg_ttlm_res - return value for negotiated TTLM handling
+ * @NEG_TTLM_RES_ACCEPT: accept the request
+ * @NEG_TTLM_RES_REJECT: reject the request
+ * @NEG_TTLM_RES_SUGGEST_PREFERRED: reject and suggest a new mapping
+ */
+enum ieee80211_neg_ttlm_res {
+	NEG_TTLM_RES_ACCEPT,
+	NEG_TTLM_RES_REJECT,
+	NEG_TTLM_RES_SUGGEST_PREFERRED
 };
 
 /**
@@ -1860,6 +1897,11 @@ struct ieee80211_vif_cfg {
  *	API calls meant for that purpose.
  * @dormant_links: bitmap of valid but disabled links, or 0 for non-MLO.
  *	Must be a subset of valid_links.
+ * @suspended_links: subset of dormant_links representing links that are
+ *	suspended.
+ *	0 for non-MLO.
+ * @neg_ttlm: negotiated TID to link mapping info.
+ *	see &struct ieee80211_neg_ttlm.
  * @addr: address of this interface
  * @p2p: indicates whether this AP or STA interface is a p2p
  *	interface, i.e. a GO or p2p-sta respectively
@@ -1897,7 +1939,8 @@ struct ieee80211_vif {
 	struct ieee80211_vif_cfg cfg;
 	struct ieee80211_bss_conf bss_conf;
 	struct ieee80211_bss_conf __rcu *link_conf[IEEE80211_MLD_MAX_NUM_LINKS];
-	u16 valid_links, active_links, dormant_links;
+	u16 valid_links, active_links, dormant_links, suspended_links;
+	struct ieee80211_neg_ttlm neg_ttlm;
 	u8 addr[ETH_ALEN] __aligned(2);
 	bool p2p;
 
@@ -2038,6 +2081,8 @@ static inline bool lockdep_vif_wiphy_mutex_held(struct ieee80211_vif *vif)
  * @IEEE80211_KEY_FLAG_GENERATE_MMIE: This flag should be set by the driver
  *	for a AES_CMAC key to indicate that it requires sequence number
  *	generation only
+ * @IEEE80211_KEY_FLAG_SPP_AMSDU: SPP A-MSDUs can be used with this key
+ *	(set by mac80211 from the sta->spp_amsdu flag)
  */
 enum ieee80211_key_flags {
 	IEEE80211_KEY_FLAG_GENERATE_IV_MGMT	= BIT(0),
@@ -2051,6 +2096,7 @@ enum ieee80211_key_flags {
 	IEEE80211_KEY_FLAG_PUT_MIC_SPACE	= BIT(8),
 	IEEE80211_KEY_FLAG_NO_AUTO_TX		= BIT(9),
 	IEEE80211_KEY_FLAG_GENERATE_MMIE	= BIT(10),
+	IEEE80211_KEY_FLAG_SPP_AMSDU		= BIT(11),
 };
 
 /**
@@ -2349,6 +2395,7 @@ struct ieee80211_link_sta {
  *	would be assigned to link[link_id] where link_id is the id assigned
  *	by the AP.
  * @valid_links: bitmap of valid links, or 0 for non-MLO
+ * @spp_amsdu: indicates whether the STA uses SPP A-MSDU or not.
  */
 struct ieee80211_sta {
 	u8 addr[ETH_ALEN];
@@ -2362,6 +2409,7 @@ struct ieee80211_sta {
 	bool tdls_initiator;
 	bool mfp;
 	bool mlo;
+	bool spp_amsdu;
 	u8 max_amsdu_subframes;
 
 	struct ieee80211_sta_aggregates *cur;
@@ -2834,8 +2882,6 @@ enum ieee80211_hw_flags {
  * @radiotap_vht_details: lists which VHT MCS information the HW reports,
  *	the default is _GI | _BANDWIDTH.
  *	Use the %IEEE80211_RADIOTAP_VHT_KNOWN_\* values.
- *
- * @radiotap_he: HE radiotap validity flags
  *
  * @radiotap_timestamp: Information for the radiotap timestamp field; if the
  *	@units_pos member is set to a non-negative value then the timestamp
@@ -4271,6 +4317,8 @@ struct ieee80211_prep_tx_info {
  *	disable background CAC/radar detection.
  * @net_fill_forward_path: Called from .ndo_fill_forward_path in order to
  *	resolve a path for hardware flow offloading
+ * @can_activate_links: Checks if a specific active_links bitmap is
+ *	supported by the driver.
  * @change_vif_links: Change the valid links on an interface, note that while
  *	removing the old link information is still valid (link_conf pointer),
  *	but may immediately disappear after the function returns. The old or
@@ -4290,6 +4338,10 @@ struct ieee80211_prep_tx_info {
  *	flow offloading for flows originating from the vif.
  *	Note that the driver must not assume that the vif driver_data is valid
  *	at this point, since the callback can be called during netdev teardown.
+ * @can_neg_ttlm: for managed interface, requests the driver to determine
+ *	if the requested TID-To-Link mapping can be accepted or not.
+ *	If it's not accepted the driver may suggest a preferred mapping and
+ *	modify @ttlm parameter with the suggested TID-to-Link mapping.
  */
 struct ieee80211_ops {
 	void (*tx)(struct ieee80211_hw *hw,
@@ -4651,6 +4703,9 @@ struct ieee80211_ops {
 				     struct ieee80211_sta *sta,
 				     struct net_device_path_ctx *ctx,
 				     struct net_device_path *path);
+	bool (*can_activate_links)(struct ieee80211_hw *hw,
+				   struct ieee80211_vif *vif,
+				   u16 active_links);
 	int (*change_vif_links)(struct ieee80211_hw *hw,
 				struct ieee80211_vif *vif,
 				u16 old_links, u16 new_links,
@@ -4667,6 +4722,9 @@ struct ieee80211_ops {
 			    struct net_device *dev,
 			    enum tc_setup_type type,
 			    void *type_data);
+	enum ieee80211_neg_ttlm_res
+	(*can_neg_ttlm)(struct ieee80211_hw *hw, struct ieee80211_vif *vif,
+			struct ieee80211_neg_ttlm *ttlm);
 };
 
 /**

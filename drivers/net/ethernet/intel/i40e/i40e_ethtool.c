@@ -1911,7 +1911,7 @@ static int i40e_get_eeprom(struct net_device *netdev,
 			len = eeprom->len - (I40E_NVM_SECTOR_SIZE * i);
 			last = true;
 		}
-		offset = eeprom->offset + (I40E_NVM_SECTOR_SIZE * i),
+		offset = eeprom->offset + (I40E_NVM_SECTOR_SIZE * i);
 		ret_val = i40e_aq_read_nvm(hw, 0x0, offset, len,
 				(u8 *)eeprom_buff + (I40E_NVM_SECTOR_SIZE * i),
 				last, NULL);
@@ -1952,9 +1952,8 @@ static int i40e_get_eeprom_len(struct net_device *netdev)
 		val = X722_EEPROM_SCOPE_LIMIT + 1;
 		return val;
 	}
-	val = (rd32(hw, I40E_GLPCI_LBARCTRL)
-		& I40E_GLPCI_LBARCTRL_FL_SIZE_MASK)
-		>> I40E_GLPCI_LBARCTRL_FL_SIZE_SHIFT;
+	val = FIELD_GET(I40E_GLPCI_LBARCTRL_FL_SIZE_MASK,
+			rd32(hw, I40E_GLPCI_LBARCTRL));
 	/* register returns value in power of 2, 64Kbyte chunks. */
 	val = (64 * 1024) * BIT(val);
 	return val;
@@ -2523,13 +2522,11 @@ static void i40e_get_priv_flag_strings(struct net_device *netdev, u8 *data)
 	u8 *p = data;
 
 	for (i = 0; i < I40E_PRIV_FLAGS_STR_LEN; i++)
-		ethtool_sprintf(&p, "%s",
-				i40e_gstrings_priv_flags[i].flag_string);
+		ethtool_puts(&p, i40e_gstrings_priv_flags[i].flag_string);
 	if (pf->hw.pf_id != 0)
 		return;
 	for (i = 0; i < I40E_GL_PRIV_FLAGS_STR_LEN; i++)
-		ethtool_sprintf(&p, "%s",
-				i40e_gl_gstrings_priv_flags[i].flag_string);
+		ethtool_puts(&p, i40e_gl_gstrings_priv_flags[i].flag_string);
 }
 
 static void i40e_get_strings(struct net_device *netdev, u32 stringset,
@@ -2895,7 +2892,6 @@ static int __i40e_get_coalesce(struct net_device *netdev,
 	struct i40e_vsi *vsi = np->vsi;
 
 	ec->tx_max_coalesced_frames_irq = vsi->work_limit;
-	ec->rx_max_coalesced_frames_irq = vsi->work_limit;
 
 	/* rx and tx usecs has per queue value. If user doesn't specify the
 	 * queue, return queue 0's value to represent.
@@ -3029,7 +3025,7 @@ static int __i40e_set_coalesce(struct net_device *netdev,
 	struct i40e_pf *pf = vsi->back;
 	int i;
 
-	if (ec->tx_max_coalesced_frames_irq || ec->rx_max_coalesced_frames_irq)
+	if (ec->tx_max_coalesced_frames_irq)
 		vsi->work_limit = ec->tx_max_coalesced_frames_irq;
 
 	if (queue < 0) {
@@ -3287,7 +3283,7 @@ static int i40e_parse_rx_flow_user_data(struct ethtool_rx_flow_spec *fsp,
 	} else if (valid) {
 		data->flex_word = value & I40E_USERDEF_FLEX_WORD;
 		data->flex_offset =
-			(value & I40E_USERDEF_FLEX_OFFSET) >> 16;
+			FIELD_GET(I40E_USERDEF_FLEX_OFFSET, value);
 		data->flex_filter = true;
 	}
 
@@ -5122,15 +5118,13 @@ static u32 i40e_get_rxfh_indir_size(struct net_device *netdev)
 /**
  * i40e_get_rxfh - get the rx flow hash indirection table
  * @netdev: network interface device structure
- * @indir: indirection table
- * @key: hash key
- * @hfunc: hash function
+ * @rxfh: pointer to param struct (indir, key, hfunc)
  *
  * Reads the indirection table directly from the hardware. Returns 0 on
  * success.
  **/
-static int i40e_get_rxfh(struct net_device *netdev, u32 *indir, u8 *key,
-			 u8 *hfunc)
+static int i40e_get_rxfh(struct net_device *netdev,
+			 struct ethtool_rxfh_param *rxfh)
 {
 	struct i40e_netdev_priv *np = netdev_priv(netdev);
 	struct i40e_vsi *vsi = np->vsi;
@@ -5138,13 +5132,12 @@ static int i40e_get_rxfh(struct net_device *netdev, u32 *indir, u8 *key,
 	int ret;
 	u16 i;
 
-	if (hfunc)
-		*hfunc = ETH_RSS_HASH_TOP;
+	rxfh->hfunc = ETH_RSS_HASH_TOP;
 
-	if (!indir)
+	if (!rxfh->indir)
 		return 0;
 
-	seed = key;
+	seed = rxfh->key;
 	lut = kzalloc(I40E_HLUT_ARRAY_SIZE, GFP_KERNEL);
 	if (!lut)
 		return -ENOMEM;
@@ -5152,7 +5145,7 @@ static int i40e_get_rxfh(struct net_device *netdev, u32 *indir, u8 *key,
 	if (ret)
 		goto out;
 	for (i = 0; i < I40E_HLUT_ARRAY_SIZE; i++)
-		indir[i] = (u32)(lut[i]);
+		rxfh->indir[i] = (u32)(lut[i]);
 
 out:
 	kfree(lut);
@@ -5163,15 +5156,15 @@ out:
 /**
  * i40e_set_rxfh - set the rx flow hash indirection table
  * @netdev: network interface device structure
- * @indir: indirection table
- * @key: hash key
- * @hfunc: hash function to use
+ * @rxfh: pointer to param struct (indir, key, hfunc)
+ * @extack: extended ACK from the Netlink message
  *
  * Returns -EINVAL if the table specifies an invalid queue id, otherwise
  * returns 0 after programming the table.
  **/
-static int i40e_set_rxfh(struct net_device *netdev, const u32 *indir,
-			 const u8 *key, const u8 hfunc)
+static int i40e_set_rxfh(struct net_device *netdev,
+			 struct ethtool_rxfh_param *rxfh,
+			 struct netlink_ext_ack *extack)
 {
 	struct i40e_netdev_priv *np = netdev_priv(netdev);
 	struct i40e_vsi *vsi = np->vsi;
@@ -5179,17 +5172,18 @@ static int i40e_set_rxfh(struct net_device *netdev, const u32 *indir,
 	u8 *seed = NULL;
 	u16 i;
 
-	if (hfunc != ETH_RSS_HASH_NO_CHANGE && hfunc != ETH_RSS_HASH_TOP)
+	if (rxfh->hfunc != ETH_RSS_HASH_NO_CHANGE &&
+	    rxfh->hfunc != ETH_RSS_HASH_TOP)
 		return -EOPNOTSUPP;
 
-	if (key) {
+	if (rxfh->key) {
 		if (!vsi->rss_hkey_user) {
 			vsi->rss_hkey_user = kzalloc(I40E_HKEY_ARRAY_SIZE,
 						     GFP_KERNEL);
 			if (!vsi->rss_hkey_user)
 				return -ENOMEM;
 		}
-		memcpy(vsi->rss_hkey_user, key, I40E_HKEY_ARRAY_SIZE);
+		memcpy(vsi->rss_hkey_user, rxfh->key, I40E_HKEY_ARRAY_SIZE);
 		seed = vsi->rss_hkey_user;
 	}
 	if (!vsi->rss_lut_user) {
@@ -5199,9 +5193,9 @@ static int i40e_set_rxfh(struct net_device *netdev, const u32 *indir,
 	}
 
 	/* Each 32 bits pointed by 'indir' is stored with a lut entry */
-	if (indir)
+	if (rxfh->indir)
 		for (i = 0; i < I40E_HLUT_ARRAY_SIZE; i++)
-			vsi->rss_lut_user[i] = (u8)(indir[i]);
+			vsi->rss_lut_user[i] = (u8)(rxfh->indir[i]);
 	else
 		i40e_fill_rss_lut(pf, vsi->rss_lut_user, I40E_HLUT_ARRAY_SIZE,
 				  vsi->rss_size);
@@ -5788,7 +5782,7 @@ static const struct ethtool_ops i40e_ethtool_recovery_mode_ops = {
 
 static const struct ethtool_ops i40e_ethtool_ops = {
 	.supported_coalesce_params = ETHTOOL_COALESCE_USECS |
-				     ETHTOOL_COALESCE_MAX_FRAMES_IRQ |
+				     ETHTOOL_COALESCE_TX_MAX_FRAMES_IRQ |
 				     ETHTOOL_COALESCE_USE_ADAPTIVE |
 				     ETHTOOL_COALESCE_RX_USECS_HIGH |
 				     ETHTOOL_COALESCE_TX_USECS_HIGH,

@@ -190,10 +190,25 @@ static const struct ieee80211_regdomain hwsim_world_regdom_custom_03 = {
 	}
 };
 
+static const struct ieee80211_regdomain hwsim_world_regdom_custom_04 = {
+	.n_reg_rules = 6,
+	.alpha2 =  "99",
+	.reg_rules = {
+		REG_RULE(2412 - 10, 2462 + 10, 40, 0, 20, 0),
+		REG_RULE(2484 - 10, 2484 + 10, 40, 0, 20, 0),
+		REG_RULE(5150 - 10, 5240 + 10, 80, 0, 30, 0),
+		REG_RULE(5260 - 10, 5320 + 10, 80, 0, 30,
+			 NL80211_RRF_DFS_CONCURRENT | NL80211_RRF_DFS),
+		REG_RULE(5745 - 10, 5825 + 10, 80, 0, 30, 0),
+		REG_RULE(5855 - 10, 5925 + 10, 80, 0, 33, 0),
+	}
+};
+
 static const struct ieee80211_regdomain *hwsim_world_regdom_custom[] = {
 	&hwsim_world_regdom_custom_01,
 	&hwsim_world_regdom_custom_02,
 	&hwsim_world_regdom_custom_03,
+	&hwsim_world_regdom_custom_04,
 };
 
 struct hwsim_vif_priv {
@@ -2447,7 +2462,7 @@ static void mac80211_hwsim_vif_info_changed(struct ieee80211_hw *hw,
 	}
 
 	if (vif->type == NL80211_IFTYPE_STATION &&
-	    changed & BSS_CHANGED_MLD_VALID_LINKS) {
+	    changed & (BSS_CHANGED_MLD_VALID_LINKS | BSS_CHANGED_MLD_TTLM)) {
 		u16 usable_links = ieee80211_vif_usable_links(vif);
 
 		if (vif->active_links != usable_links)
@@ -2721,6 +2736,24 @@ static int mac80211_hwsim_get_survey(struct ieee80211_hw *hw, int idx,
 	mutex_unlock(&hwsim->mutex);
 
 	return 0;
+}
+
+static enum ieee80211_neg_ttlm_res
+mac80211_hwsim_can_neg_ttlm(struct ieee80211_hw *hw, struct ieee80211_vif *vif,
+			    struct ieee80211_neg_ttlm *neg_ttlm)
+{
+	u32 i;
+
+	/* For testing purposes, accept if all TIDs are mapped to the same links
+	 * set, otherwise reject.
+	 */
+	for (i = 0; i < IEEE80211_TTLM_NUM_TIDS; i++) {
+		if (neg_ttlm->downlink[i] != neg_ttlm->uplink[i] ||
+		    neg_ttlm->downlink[i] != neg_ttlm->downlink[0])
+			return NEG_TTLM_RES_REJECT;
+	}
+
+	return NEG_TTLM_RES_ACCEPT;
 }
 
 #ifdef CONFIG_NL80211_TESTMODE
@@ -3888,6 +3921,7 @@ static const struct ieee80211_ops mac80211_hwsim_mlo_ops = {
 	.change_vif_links = mac80211_hwsim_change_vif_links,
 	.change_sta_links = mac80211_hwsim_change_sta_links,
 	.sta_state = mac80211_hwsim_sta_state,
+	.can_neg_ttlm = mac80211_hwsim_can_neg_ttlm,
 };
 
 struct hwsim_new_radio_params {
@@ -4029,6 +4063,8 @@ static const struct ieee80211_sband_iftype_data sband_capa_2ghz[] = {
 					IEEE80211_HE_MAC_CAP3_OMI_CONTROL |
 					IEEE80211_HE_MAC_CAP3_MAX_AMPDU_LEN_EXP_EXT_3,
 				.mac_cap_info[4] = IEEE80211_HE_MAC_CAP4_AMSDU_IN_AMPDU,
+				.phy_cap_info[0] =
+					IEEE80211_HE_PHY_CAP0_CHANNEL_WIDTH_SET_40MHZ_IN_2G,
 				.phy_cap_info[1] =
 					IEEE80211_HE_PHY_CAP1_PREAMBLE_PUNC_RX_MASK |
 					IEEE80211_HE_PHY_CAP1_DEVICE_CLASS_A |
@@ -4134,6 +4170,8 @@ static const struct ieee80211_sband_iftype_data sband_capa_2ghz[] = {
 					IEEE80211_HE_MAC_CAP3_OMI_CONTROL |
 					IEEE80211_HE_MAC_CAP3_MAX_AMPDU_LEN_EXP_EXT_3,
 				.mac_cap_info[4] = IEEE80211_HE_MAC_CAP4_AMSDU_IN_AMPDU,
+				.phy_cap_info[0] =
+					IEEE80211_HE_PHY_CAP0_CHANNEL_WIDTH_SET_40MHZ_IN_2G,
 				.phy_cap_info[1] =
 					IEEE80211_HE_PHY_CAP1_PREAMBLE_PUNC_RX_MASK |
 					IEEE80211_HE_PHY_CAP1_DEVICE_CLASS_A |
@@ -4237,6 +4275,8 @@ static const struct ieee80211_sband_iftype_data sband_capa_2ghz[] = {
 					IEEE80211_HE_MAC_CAP3_OMI_CONTROL |
 					IEEE80211_HE_MAC_CAP3_MAX_AMPDU_LEN_EXP_EXT_3,
 				.mac_cap_info[4] = IEEE80211_HE_MAC_CAP4_AMSDU_IN_AMPDU,
+				.phy_cap_info[0] =
+					IEEE80211_HE_PHY_CAP0_CHANNEL_WIDTH_SET_40MHZ_IN_2G,
 				.phy_cap_info[1] =
 					IEEE80211_HE_PHY_CAP1_PREAMBLE_PUNC_RX_MASK |
 					IEEE80211_HE_PHY_CAP1_DEVICE_CLASS_A |
@@ -4944,6 +4984,33 @@ static void mac80211_hwsim_sband_capab(struct ieee80211_supported_band *sband)
 	 BIT(NL80211_IFTYPE_MESH_POINT) | \
 	 BIT(NL80211_IFTYPE_OCB))
 
+static const u8 iftypes_ext_capa_ap[] = {
+	 [0] = WLAN_EXT_CAPA1_EXT_CHANNEL_SWITCHING,
+	 [2] = WLAN_EXT_CAPA3_MULTI_BSSID_SUPPORT,
+	 [7] = WLAN_EXT_CAPA8_OPMODE_NOTIF |
+	       WLAN_EXT_CAPA8_MAX_MSDU_IN_AMSDU_LSB,
+	 [8] = WLAN_EXT_CAPA9_MAX_MSDU_IN_AMSDU_MSB,
+	 [9] = WLAN_EXT_CAPA10_TWT_RESPONDER_SUPPORT,
+};
+
+#define MAC80211_HWSIM_MLD_CAPA_OPS				\
+	FIELD_PREP_CONST(IEEE80211_MLD_CAP_OP_TID_TO_LINK_MAP_NEG_SUPP, \
+			 IEEE80211_MLD_CAP_OP_TID_TO_LINK_MAP_NEG_SUPP_SAME) | \
+	FIELD_PREP_CONST(IEEE80211_MLD_CAP_OP_MAX_SIMUL_LINKS, \
+			 IEEE80211_MLD_MAX_NUM_LINKS - 1)
+
+static const struct wiphy_iftype_ext_capab mac80211_hwsim_iftypes_ext_capa[] = {
+	{
+		.iftype = NL80211_IFTYPE_AP,
+		.extended_capabilities = iftypes_ext_capa_ap,
+		.extended_capabilities_mask = iftypes_ext_capa_ap,
+		.extended_capabilities_len = sizeof(iftypes_ext_capa_ap),
+		.eml_capabilities = IEEE80211_EML_CAP_EMLSR_SUPP |
+				    IEEE80211_EML_CAP_EMLMR_SUPPORT,
+		.mld_capa_and_ops = MAC80211_HWSIM_MLD_CAPA_OPS,
+	},
+};
+
 static int mac80211_hwsim_new_radio(struct genl_info *info,
 				    struct hwsim_new_radio_params *param)
 {
@@ -5138,6 +5205,10 @@ static int mac80211_hwsim_new_radio(struct genl_info *info,
 		ieee80211_hw_set(hw, SUPPORTS_DYNAMIC_PS);
 		ieee80211_hw_set(hw, CONNECTION_MONITOR);
 		ieee80211_hw_set(hw, AP_LINK_PS);
+
+		hw->wiphy->iftype_ext_capab = mac80211_hwsim_iftypes_ext_capa;
+		hw->wiphy->num_iftype_ext_capab =
+			ARRAY_SIZE(mac80211_hwsim_iftypes_ext_capa);
 	} else {
 		ieee80211_hw_set(hw, HOST_BROADCAST_PS_BUFFERING);
 		ieee80211_hw_set(hw, PS_NULLFUNC_STACK);
@@ -5287,6 +5358,10 @@ static int mac80211_hwsim_new_radio(struct genl_info *info,
 		/* give the regulatory workqueue a chance to run */
 		schedule_timeout_interruptible(1);
 	}
+
+	/* TODO: Add param */
+	wiphy_ext_feature_set(hw->wiphy,
+			      NL80211_EXT_FEATURE_DFS_CONCURRENT);
 
 	if (param->no_vif)
 		ieee80211_hw_set(hw, NO_AUTO_VIF);

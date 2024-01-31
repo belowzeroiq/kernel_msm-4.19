@@ -1176,7 +1176,8 @@ static void nfp_net_rx_dim_work(struct work_struct *work)
 	 * count.
 	 */
 	factor = nn->tlv_caps.me_freq_mhz / 16;
-	if (nfp_net_coalesce_para_check(factor * moder.usec, moder.pkts))
+	if (nfp_net_coalesce_para_check(factor * moder.usec) ||
+	    nfp_net_coalesce_para_check(moder.pkts))
 		return;
 
 	/* copy RX interrupt coalesce parameters */
@@ -1205,7 +1206,8 @@ static void nfp_net_tx_dim_work(struct work_struct *work)
 	 * count.
 	 */
 	factor = nn->tlv_caps.me_freq_mhz / 16;
-	if (nfp_net_coalesce_para_check(factor * moder.usec, moder.pkts))
+	if (nfp_net_coalesce_para_check(factor * moder.usec) ||
+	    nfp_net_coalesce_para_check(moder.pkts))
 		return;
 
 	/* copy TX interrupt coalesce parameters */
@@ -2114,7 +2116,10 @@ nfp_net_features_check(struct sk_buff *skb, struct net_device *dev,
 	if (skb_is_gso(skb)) {
 		u32 hdrlen;
 
-		hdrlen = skb_inner_tcp_all_headers(skb);
+		if (skb_shinfo(skb)->gso_type & SKB_GSO_UDP_L4)
+			hdrlen = skb_inner_transport_offset(skb) + sizeof(struct udphdr);
+		else
+			hdrlen = skb_inner_tcp_all_headers(skb);
 
 		/* Assume worst case scenario of having longest possible
 		 * metadata prepend - 8B
@@ -2417,7 +2422,7 @@ void nfp_net_info(struct nfp_net *nn)
 		nn->fw_ver.extend, nn->fw_ver.class,
 		nn->fw_ver.major, nn->fw_ver.minor,
 		nn->max_mtu);
-	nn_info(nn, "CAP: %#x %s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s\n",
+	nn_info(nn, "CAP: %#x %s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s\n",
 		nn->cap,
 		nn->cap & NFP_NET_CFG_CTRL_PROMISC  ? "PROMISC "  : "",
 		nn->cap & NFP_NET_CFG_CTRL_L2BC     ? "L2BCFILT " : "",
@@ -2446,6 +2451,7 @@ void nfp_net_info(struct nfp_net *nn)
 						      "RXCSUM_COMPLETE " : "",
 		nn->cap & NFP_NET_CFG_CTRL_LIVE_ADDR ? "LIVE_ADDR " : "",
 		nn->cap_w1 & NFP_NET_CFG_CTRL_MCAST_FILTER ? "MULTICAST_FILTER " : "",
+		nn->cap_w1 & NFP_NET_CFG_CTRL_USO ? "USO " : "",
 		nfp_app_extra_cap(nn->app, nn));
 }
 
@@ -2694,6 +2700,8 @@ static void nfp_net_netdev_init(struct nfp_net *nn)
 	if ((nn->cap & NFP_NET_CFG_CTRL_LSO && nn->fw_ver.major > 2) ||
 	    nn->cap & NFP_NET_CFG_CTRL_LSO2) {
 		netdev->hw_features |= NETIF_F_TSO | NETIF_F_TSO6;
+		if (nn->cap_w1 & NFP_NET_CFG_CTRL_USO)
+			netdev->hw_features |= NETIF_F_GSO_UDP_L4;
 		nn->dp.ctrl |= nn->cap & NFP_NET_CFG_CTRL_LSO2 ?:
 					 NFP_NET_CFG_CTRL_LSO;
 	}

@@ -3,7 +3,7 @@
  * Wireless configuration interface internals.
  *
  * Copyright 2006-2010	Johannes Berg <johannes@sipsolutions.net>
- * Copyright (C) 2018-2022 Intel Corporation
+ * Copyright (C) 2018-2023 Intel Corporation
  */
 #ifndef __NET_WIRELESS_CORE_H
 #define __NET_WIRELESS_CORE_H
@@ -293,6 +293,7 @@ struct cfg80211_cqm_config {
 	u32 rssi_hyst;
 	s32 last_rssi_event_value;
 	enum nl80211_cqm_rssi_threshold_event last_rssi_event_type;
+	bool use_range_api;
 	int n_rssi_thresholds;
 	s32 rssi_thresholds[] __counted_by(n_rssi_thresholds);
 };
@@ -361,7 +362,8 @@ int cfg80211_mlme_auth(struct cfg80211_registered_device *rdev,
 		       struct cfg80211_auth_request *req);
 int cfg80211_mlme_assoc(struct cfg80211_registered_device *rdev,
 			struct net_device *dev,
-			struct cfg80211_assoc_request *req);
+			struct cfg80211_assoc_request *req,
+			struct netlink_ext_ack *extack);
 int cfg80211_mlme_deauth(struct cfg80211_registered_device *rdev,
 			 struct net_device *dev, const u8 *bssid,
 			 const u8 *ie, int ie_len, u16 reason,
@@ -547,5 +549,16 @@ void cfg80211_remove_links(struct wireless_dev *wdev);
 int cfg80211_remove_virtual_intf(struct cfg80211_registered_device *rdev,
 				 struct wireless_dev *wdev);
 void cfg80211_wdev_release_link_bsses(struct wireless_dev *wdev, u16 link_mask);
+
+#if IS_ENABLED(CONFIG_CFG80211_KUNIT_TEST)
+#define EXPORT_SYMBOL_IF_CFG80211_KUNIT(sym) EXPORT_SYMBOL_IF_KUNIT(sym)
+#define VISIBLE_IF_CFG80211_KUNIT
+size_t cfg80211_gen_new_ie(const u8 *ie, size_t ielen,
+			   const u8 *subie, size_t subie_len,
+			   u8 *new_ie, size_t new_ie_len);
+#else
+#define EXPORT_SYMBOL_IF_CFG80211_KUNIT(sym)
+#define VISIBLE_IF_CFG80211_KUNIT static
+#endif /* IS_ENABLED(CONFIG_CFG80211_KUNIT_TEST) */
 
 #endif /* __NET_WIRELESS_CORE_H */

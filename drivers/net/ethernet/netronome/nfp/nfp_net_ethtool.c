@@ -633,7 +633,8 @@ static void nfp_net_get_ringparam(struct net_device *netdev,
 	ring->tx_pending = nn->dp.txd_cnt;
 }
 
-static int nfp_net_set_ring_size(struct nfp_net *nn, u32 rxd_cnt, u32 txd_cnt)
+static int nfp_net_set_ring_size(struct nfp_net *nn, u32 rxd_cnt, u32 txd_cnt,
+				 struct netlink_ext_ack *extack)
 {
 	struct nfp_net_dp *dp;
 
@@ -644,7 +645,7 @@ static int nfp_net_set_ring_size(struct nfp_net *nn, u32 rxd_cnt, u32 txd_cnt)
 	dp->rxd_cnt = rxd_cnt;
 	dp->txd_cnt = txd_cnt;
 
-	return nfp_net_ring_reconfig(nn, dp, NULL);
+	return nfp_net_ring_reconfig(nn, dp, extack);
 }
 
 static int nfp_net_set_ringparam(struct net_device *netdev,
@@ -657,7 +658,7 @@ static int nfp_net_set_ringparam(struct net_device *netdev,
 
 	/* We don't have separate queues/rings for small/large frames. */
 	if (ring->rx_mini_pending || ring->rx_jumbo_pending)
-		return -EINVAL;
+		return -EOPNOTSUPP;
 
 	qc_min = nn->dev_info->min_qc_size;
 	qc_max = nn->dev_info->max_qc_size;
@@ -666,9 +667,15 @@ static int nfp_net_set_ringparam(struct net_device *netdev,
 	rxd_cnt = roundup_pow_of_two(ring->rx_pending);
 	txd_cnt = roundup_pow_of_two(ring->tx_pending);
 
-	if (rxd_cnt < qc_min || rxd_cnt > qc_max ||
-	    txd_cnt < qc_min / tx_dpp || txd_cnt > qc_max / tx_dpp)
+	if (rxd_cnt < qc_min || rxd_cnt > qc_max) {
+		NL_SET_ERR_MSG_MOD(extack, "rx parameter out of bounds");
 		return -EINVAL;
+	}
+
+	if (txd_cnt < qc_min / tx_dpp || txd_cnt > qc_max / tx_dpp) {
+		NL_SET_ERR_MSG_MOD(extack, "tx parameter out of bounds");
+		return -EINVAL;
+	}
 
 	if (nn->dp.rxd_cnt == rxd_cnt && nn->dp.txd_cnt == txd_cnt)
 		return 0;
@@ -676,7 +683,7 @@ static int nfp_net_set_ringparam(struct net_device *netdev,
 	nn_dbg(nn, "Change ring size: RxQ %u->%u, TxQ %u->%u\n",
 	       nn->dp.rxd_cnt, rxd_cnt, nn->dp.txd_cnt, txd_cnt);
 
-	return nfp_net_set_ring_size(nn, rxd_cnt, txd_cnt);
+	return nfp_net_set_ring_size(nn, rxd_cnt, txd_cnt, extack);
 }
 
 static int nfp_test_link(struct net_device *netdev)
@@ -800,7 +807,7 @@ static void nfp_get_self_test_strings(struct net_device *netdev, u8 *data)
 
 	for (i = 0; i < NFP_TEST_TOTAL_NUM; i++)
 		if (nfp_self_test[i].is_supported(netdev))
-			ethtool_sprintf(&data, nfp_self_test[i].name);
+			ethtool_puts(&data, nfp_self_test[i].name);
 }
 
 static int nfp_get_self_test_count(struct net_device *netdev)
@@ -852,24 +859,24 @@ static u8 *nfp_vnic_get_sw_stats_strings(struct net_device *netdev, u8 *data)
 		ethtool_sprintf(&data, "rvec_%u_tx_busy", i);
 	}
 
-	ethtool_sprintf(&data, "hw_rx_csum_ok");
-	ethtool_sprintf(&data, "hw_rx_csum_inner_ok");
-	ethtool_sprintf(&data, "hw_rx_csum_complete");
-	ethtool_sprintf(&data, "hw_rx_csum_err");
-	ethtool_sprintf(&data, "rx_replace_buf_alloc_fail");
-	ethtool_sprintf(&data, "rx_tls_decrypted_packets");
-	ethtool_sprintf(&data, "hw_tx_csum");
-	ethtool_sprintf(&data, "hw_tx_inner_csum");
-	ethtool_sprintf(&data, "tx_gather");
-	ethtool_sprintf(&data, "tx_lso");
-	ethtool_sprintf(&data, "tx_tls_encrypted_packets");
-	ethtool_sprintf(&data, "tx_tls_ooo");
-	ethtool_sprintf(&data, "tx_tls_drop_no_sync_data");
+	ethtool_puts(&data, "hw_rx_csum_ok");
+	ethtool_puts(&data, "hw_rx_csum_inner_ok");
+	ethtool_puts(&data, "hw_rx_csum_complete");
+	ethtool_puts(&data, "hw_rx_csum_err");
+	ethtool_puts(&data, "rx_replace_buf_alloc_fail");
+	ethtool_puts(&data, "rx_tls_decrypted_packets");
+	ethtool_puts(&data, "hw_tx_csum");
+	ethtool_puts(&data, "hw_tx_inner_csum");
+	ethtool_puts(&data, "tx_gather");
+	ethtool_puts(&data, "tx_lso");
+	ethtool_puts(&data, "tx_tls_encrypted_packets");
+	ethtool_puts(&data, "tx_tls_ooo");
+	ethtool_puts(&data, "tx_tls_drop_no_sync_data");
 
-	ethtool_sprintf(&data, "hw_tls_no_space");
-	ethtool_sprintf(&data, "rx_tls_resync_req_ok");
-	ethtool_sprintf(&data, "rx_tls_resync_req_ign");
-	ethtool_sprintf(&data, "rx_tls_resync_sent");
+	ethtool_puts(&data, "hw_tls_no_space");
+	ethtool_puts(&data, "rx_tls_resync_req_ok");
+	ethtool_puts(&data, "rx_tls_resync_req_ign");
+	ethtool_puts(&data, "rx_tls_resync_sent");
 
 	return data;
 }
@@ -943,13 +950,13 @@ nfp_vnic_get_hw_stats_strings(u8 *data, unsigned int num_vecs, bool repr)
 	swap_off = repr * NN_ET_SWITCH_STATS_LEN;
 
 	for (i = 0; i < NN_ET_SWITCH_STATS_LEN; i++)
-		ethtool_sprintf(&data, nfp_net_et_stats[i + swap_off].name);
+		ethtool_puts(&data, nfp_net_et_stats[i + swap_off].name);
 
 	for (i = NN_ET_SWITCH_STATS_LEN; i < NN_ET_SWITCH_STATS_LEN * 2; i++)
-		ethtool_sprintf(&data, nfp_net_et_stats[i - swap_off].name);
+		ethtool_puts(&data, nfp_net_et_stats[i - swap_off].name);
 
 	for (i = NN_ET_SWITCH_STATS_LEN * 2; i < NN_ET_GLOBAL_STATS_LEN; i++)
-		ethtool_sprintf(&data, nfp_net_et_stats[i].name);
+		ethtool_puts(&data, nfp_net_et_stats[i].name);
 
 	for (i = 0; i < num_vecs; i++) {
 		ethtool_sprintf(&data, "rxq_%u_pkts", i);
@@ -1787,8 +1794,8 @@ static u32 nfp_net_get_rxfh_key_size(struct net_device *netdev)
 	return nfp_net_rss_key_sz(nn);
 }
 
-static int nfp_net_get_rxfh(struct net_device *netdev, u32 *indir, u8 *key,
-			    u8 *hfunc)
+static int nfp_net_get_rxfh(struct net_device *netdev,
+			    struct ethtool_rxfh_param *rxfh)
 {
 	struct nfp_net *nn = netdev_priv(netdev);
 	int i;
@@ -1796,41 +1803,41 @@ static int nfp_net_get_rxfh(struct net_device *netdev, u32 *indir, u8 *key,
 	if (!(nn->cap & NFP_NET_CFG_CTRL_RSS_ANY))
 		return -EOPNOTSUPP;
 
-	if (indir)
+	if (rxfh->indir)
 		for (i = 0; i < ARRAY_SIZE(nn->rss_itbl); i++)
-			indir[i] = nn->rss_itbl[i];
-	if (key)
-		memcpy(key, nn->rss_key, nfp_net_rss_key_sz(nn));
-	if (hfunc) {
-		*hfunc = nn->rss_hfunc;
-		if (*hfunc >= 1 << ETH_RSS_HASH_FUNCS_COUNT)
-			*hfunc = ETH_RSS_HASH_UNKNOWN;
-	}
+			rxfh->indir[i] = nn->rss_itbl[i];
+	if (rxfh->key)
+		memcpy(rxfh->key, nn->rss_key, nfp_net_rss_key_sz(nn));
+
+	rxfh->hfunc = nn->rss_hfunc;
+	if (rxfh->hfunc >= 1 << ETH_RSS_HASH_FUNCS_COUNT)
+		rxfh->hfunc = ETH_RSS_HASH_UNKNOWN;
 
 	return 0;
 }
 
 static int nfp_net_set_rxfh(struct net_device *netdev,
-			    const u32 *indir, const u8 *key,
-			    const u8 hfunc)
+			    struct ethtool_rxfh_param *rxfh,
+			    struct netlink_ext_ack *extack)
 {
 	struct nfp_net *nn = netdev_priv(netdev);
 	int i;
 
 	if (!(nn->cap & NFP_NET_CFG_CTRL_RSS_ANY) ||
-	    !(hfunc == ETH_RSS_HASH_NO_CHANGE || hfunc == nn->rss_hfunc))
+	    !(rxfh->hfunc == ETH_RSS_HASH_NO_CHANGE ||
+	      rxfh->hfunc == nn->rss_hfunc))
 		return -EOPNOTSUPP;
 
-	if (!key && !indir)
+	if (!rxfh->key && !rxfh->indir)
 		return 0;
 
-	if (key) {
-		memcpy(nn->rss_key, key, nfp_net_rss_key_sz(nn));
+	if (rxfh->key) {
+		memcpy(nn->rss_key, rxfh->key, nfp_net_rss_key_sz(nn));
 		nfp_net_rss_write_key(nn);
 	}
-	if (indir) {
+	if (rxfh->indir) {
 		for (i = 0; i < ARRAY_SIZE(nn->rss_itbl); i++)
-			nn->rss_itbl[i] = indir[i];
+			nn->rss_itbl[i] = rxfh->indir[i];
 
 		nfp_net_rss_write_itbl(nn);
 	}
@@ -1866,7 +1873,7 @@ static int nfp_net_get_coalesce(struct net_device *netdev,
 	struct nfp_net *nn = netdev_priv(netdev);
 
 	if (!(nn->cap & NFP_NET_CFG_CTRL_IRQMOD))
-		return -EINVAL;
+		return -EOPNOTSUPP;
 
 	ec->use_adaptive_rx_coalesce = nn->rx_coalesce_adapt_on;
 	ec->use_adaptive_tx_coalesce = nn->tx_coalesce_adapt_on;
@@ -2145,22 +2152,40 @@ static int nfp_net_set_coalesce(struct net_device *netdev,
 	 */
 
 	if (!(nn->cap & NFP_NET_CFG_CTRL_IRQMOD))
-		return -EINVAL;
+		return -EOPNOTSUPP;
 
 	/* ensure valid configuration */
-	if (!ec->rx_coalesce_usecs && !ec->rx_max_coalesced_frames)
+	if (!ec->rx_coalesce_usecs && !ec->rx_max_coalesced_frames) {
+		NL_SET_ERR_MSG_MOD(extack,
+				   "rx-usecs and rx-frames cannot both be zero");
 		return -EINVAL;
+	}
 
-	if (!ec->tx_coalesce_usecs && !ec->tx_max_coalesced_frames)
+	if (!ec->tx_coalesce_usecs && !ec->tx_max_coalesced_frames) {
+		NL_SET_ERR_MSG_MOD(extack,
+				   "tx-usecs and tx-frames cannot both be zero");
 		return -EINVAL;
+	}
 
-	if (nfp_net_coalesce_para_check(ec->rx_coalesce_usecs * factor,
-					ec->rx_max_coalesced_frames))
+	if (nfp_net_coalesce_para_check(ec->rx_coalesce_usecs * factor)) {
+		NL_SET_ERR_MSG_MOD(extack, "rx-usecs too large");
 		return -EINVAL;
+	}
 
-	if (nfp_net_coalesce_para_check(ec->tx_coalesce_usecs * factor,
-					ec->tx_max_coalesced_frames))
+	if (nfp_net_coalesce_para_check(ec->rx_max_coalesced_frames)) {
+		NL_SET_ERR_MSG_MOD(extack, "rx-frames too large");
 		return -EINVAL;
+	}
+
+	if (nfp_net_coalesce_para_check(ec->tx_coalesce_usecs * factor)) {
+		NL_SET_ERR_MSG_MOD(extack, "tx-usecs too large");
+		return -EINVAL;
+	}
+
+	if (nfp_net_coalesce_para_check(ec->tx_max_coalesced_frames)) {
+		NL_SET_ERR_MSG_MOD(extack, "tx-frames too large");
+		return -EINVAL;
+	}
 
 	/* configuration is valid */
 	nn->rx_coalesce_adapt_on = !!ec->use_adaptive_rx_coalesce;
@@ -2502,6 +2527,7 @@ static const struct ethtool_ops nfp_net_ethtool_ops = {
 	.set_pauseparam		= nfp_port_set_pauseparam,
 	.get_pauseparam		= nfp_port_get_pauseparam,
 	.set_phys_id		= nfp_net_set_phys_id,
+	.get_ts_info		= ethtool_op_get_ts_info,
 };
 
 const struct ethtool_ops nfp_port_ethtool_ops = {

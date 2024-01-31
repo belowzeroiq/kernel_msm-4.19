@@ -16,12 +16,14 @@
 #include "octep_config.h"
 #include "octep_main.h"
 #include "octep_ctrl_net.h"
+#include "octep_pfvf_mbox.h"
 
 #define OCTEP_INTR_POLL_TIME_MSECS    100
 struct workqueue_struct *octep_wq;
 
 /* Supported Devices */
 static const struct pci_device_id octep_pci_id_tbl[] = {
+	{PCI_DEVICE(PCI_VENDOR_ID_CAVIUM, OCTEP_PCI_DEVICE_ID_CN98_PF)},
 	{PCI_DEVICE(PCI_VENDOR_ID_CAVIUM, OCTEP_PCI_DEVICE_ID_CN93_PF)},
 	{PCI_DEVICE(PCI_VENDOR_ID_CAVIUM, OCTEP_PCI_DEVICE_ID_CNF95N_PF)},
 	{PCI_DEVICE(PCI_VENDOR_ID_CAVIUM, OCTEP_PCI_DEVICE_ID_CN10KA_PF)},
@@ -156,6 +158,21 @@ static void octep_disable_msix(struct octep_device *oct)
 	kfree(oct->msix_entries);
 	oct->msix_entries = NULL;
 	dev_info(&oct->pdev->dev, "Disabled MSI-X\n");
+}
+
+/**
+ * octep_mbox_intr_handler() - common handler for pfvf mbox interrupts.
+ *
+ * @irq: Interrupt number.
+ * @data: interrupt data.
+ *
+ * this is common handler for pfvf mbox interrupts.
+ */
+static irqreturn_t octep_mbox_intr_handler(int irq, void *data)
+{
+	struct octep_device *oct = data;
+
+	return oct->hw_ops.mbox_intr_handler(oct);
 }
 
 /**
@@ -361,8 +378,12 @@ static int octep_request_irqs(struct octep_device *oct)
 
 		snprintf(irq_name, OCTEP_MSIX_NAME_SIZE,
 			 "%s-%s", netdev->name, non_ioq_msix_names[i]);
-		if (!strncmp(non_ioq_msix_names[i], "epf_oei_rint",
-			     strlen("epf_oei_rint"))) {
+		if (!strncmp(non_ioq_msix_names[i], "epf_mbox_rint", strlen("epf_mbox_rint"))) {
+			ret = request_irq(msix_entry->vector,
+					  octep_mbox_intr_handler, 0,
+					  irq_name, oct);
+		} else if (!strncmp(non_ioq_msix_names[i], "epf_oei_rint",
+			   strlen("epf_oei_rint"))) {
 			ret = request_irq(msix_entry->vector,
 					  octep_oei_intr_handler, 0,
 					  irq_name, oct);
@@ -821,6 +842,7 @@ static netdev_tx_t octep_start_xmit(struct sk_buff *skb,
 				    struct net_device *netdev)
 {
 	struct octep_device *oct = netdev_priv(netdev);
+	netdev_features_t feat  = netdev->features;
 	struct octep_tx_sglist_desc *sglist;
 	struct octep_tx_buffer *tx_buffer;
 	struct octep_tx_desc_hw *hw_desc;
@@ -854,8 +876,9 @@ static netdev_tx_t octep_start_xmit(struct sk_buff *skb,
 	tx_buffer->skb = skb;
 
 	ih = &hw_desc->ih;
-	ih->tlen = skb->len;
-	ih->pkind = oct->pkind;
+	ih->pkind = oct->conf->fw_info.pkind;
+	ih->fsz = oct->conf->fw_info.fsz;
+	ih->tlen = skb->len + ih->fsz;
 
 	if (!nr_frags) {
 		tx_buffer->gather = 0;
@@ -900,6 +923,19 @@ static netdev_tx_t octep_start_xmit(struct sk_buff *skb,
 			si++;
 		}
 		hw_desc->dptr = tx_buffer->sglist_dma;
+	}
+
+	if (oct->conf->fw_info.tx_ol_flags) {
+		if ((feat & (NETIF_F_TSO)) && (skb_is_gso(skb))) {
+			hw_desc->txm.ol_flags = OCTEP_TX_OFFLOAD_CKSUM;
+			hw_desc->txm.ol_flags |= OCTEP_TX_OFFLOAD_TSO;
+			hw_desc->txm.gso_size =  skb_shinfo(skb)->gso_size;
+			hw_desc->txm.gso_segs =  skb_shinfo(skb)->gso_segs;
+		} else if (feat & (NETIF_F_IP_CSUM | NETIF_F_IPV6_CSUM)) {
+			hw_desc->txm.ol_flags = OCTEP_TX_OFFLOAD_CKSUM;
+		}
+		/* due to ESR txm will be swapped by hw */
+		hw_desc->txm64[0] = (__force u64)cpu_to_be64(hw_desc->txm64[0]);
 	}
 
 	xmit_more = netdev_xmit_more();
@@ -1066,6 +1102,41 @@ static int octep_change_mtu(struct net_device *netdev, int new_mtu)
 	return err;
 }
 
+static int octep_set_features(struct net_device *dev, netdev_features_t features)
+{
+	struct octep_ctrl_net_offloads offloads = { 0 };
+	struct octep_device *oct = netdev_priv(dev);
+	int err;
+
+	/* We only support features received from firmware */
+	if ((features & dev->hw_features) != features)
+		return -EINVAL;
+
+	if (features & NETIF_F_TSO)
+		offloads.tx_offloads |= OCTEP_TX_OFFLOAD_TSO;
+
+	if (features & NETIF_F_TSO6)
+		offloads.tx_offloads |= OCTEP_TX_OFFLOAD_TSO;
+
+	if (features & NETIF_F_IP_CSUM)
+		offloads.tx_offloads |= OCTEP_TX_OFFLOAD_CKSUM;
+
+	if (features & NETIF_F_IPV6_CSUM)
+		offloads.tx_offloads |= OCTEP_TX_OFFLOAD_CKSUM;
+
+	if (features & NETIF_F_RXCSUM)
+		offloads.rx_offloads |= OCTEP_RX_OFFLOAD_CKSUM;
+
+	err = octep_ctrl_net_set_offloads(oct,
+					  OCTEP_CTRL_NET_INVALID_VFID,
+					  &offloads,
+					  true);
+	if (!err)
+		dev->features = features;
+
+	return err;
+}
+
 static const struct net_device_ops octep_netdev_ops = {
 	.ndo_open                = octep_open,
 	.ndo_stop                = octep_stop,
@@ -1074,6 +1145,7 @@ static const struct net_device_ops octep_netdev_ops = {
 	.ndo_tx_timeout          = octep_tx_timeout,
 	.ndo_set_mac_address     = octep_set_mac,
 	.ndo_change_mtu          = octep_change_mtu,
+	.ndo_set_features        = octep_set_features,
 };
 
 /**
@@ -1147,6 +1219,8 @@ static void octep_ctrl_mbox_task(struct work_struct *work)
 static const char *octep_devid_to_str(struct octep_device *oct)
 {
 	switch (oct->chip_id) {
+	case OCTEP_PCI_DEVICE_ID_CN98_PF:
+		return "CN98XX";
 	case OCTEP_PCI_DEVICE_ID_CN93_PF:
 		return "CN93XX";
 	case OCTEP_PCI_DEVICE_ID_CNF95N_PF:
@@ -1197,6 +1271,7 @@ int octep_device_setup(struct octep_device *oct)
 	dev_info(&pdev->dev, "chip_id = 0x%x\n", pdev->device);
 
 	switch (oct->chip_id) {
+	case OCTEP_PCI_DEVICE_ID_CN98_PF:
 	case OCTEP_PCI_DEVICE_ID_CN93_PF:
 	case OCTEP_PCI_DEVICE_ID_CNF95N_PF:
 		dev_info(&pdev->dev, "Setting up OCTEON %s PF PASS%d.%d\n",
@@ -1218,11 +1293,17 @@ int octep_device_setup(struct octep_device *oct)
 		goto unsupported_dev;
 	}
 
-	oct->pkind = CFG_GET_IQ_PKIND(oct->conf);
 
 	ret = octep_ctrl_net_init(oct);
 	if (ret)
 		return ret;
+
+	INIT_WORK(&oct->tx_timeout_task, octep_tx_timeout_task);
+	INIT_WORK(&oct->ctrl_mbox_task, octep_ctrl_mbox_task);
+	INIT_DELAYED_WORK(&oct->intr_poll_task, octep_intr_poll_task);
+	oct->poll_non_ioq_intr = true;
+	queue_delayed_work(octep_wq, &oct->intr_poll_task,
+			   msecs_to_jiffies(OCTEP_INTR_POLL_TIME_MSECS));
 
 	atomic_set(&oct->hb_miss_cnt, 0);
 	INIT_DELAYED_WORK(&oct->hb_task, octep_hb_timeout_task);
@@ -1261,6 +1342,7 @@ static void octep_device_cleanup(struct octep_device *oct)
 		oct->mbox[i] = NULL;
 	}
 
+	octep_delete_pfvf_mbox(oct);
 	octep_ctrl_net_uninit(oct);
 	cancel_delayed_work_sync(&oct->hb_task);
 
@@ -1289,7 +1371,8 @@ static bool get_fw_ready_status(struct pci_dev *pdev)
 
 		pci_read_config_byte(pdev, (pos + 8), &status);
 		dev_info(&pdev->dev, "Firmware ready status = %u\n", status);
-		return status;
+#define FW_STATUS_READY 1ULL
+		return status == FW_STATUS_READY;
 	}
 	return false;
 }
@@ -1357,38 +1440,52 @@ static int octep_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
 		goto err_octep_config;
 	}
 
-	octep_ctrl_net_get_info(octep_dev, OCTEP_CTRL_NET_INVALID_VFID,
-				&octep_dev->conf->fw_info);
+	err = octep_setup_pfvf_mbox(octep_dev);
+	if (err) {
+		dev_err(&pdev->dev, "PF-VF mailbox setup failed\n");
+		goto register_dev_err;
+	}
+
+	err = octep_ctrl_net_get_info(octep_dev, OCTEP_CTRL_NET_INVALID_VFID,
+				      &octep_dev->conf->fw_info);
+	if (err) {
+		dev_err(&pdev->dev, "Failed to get firmware info\n");
+		goto register_dev_err;
+	}
 	dev_info(&octep_dev->pdev->dev, "Heartbeat interval %u msecs Heartbeat miss count %u\n",
 		 octep_dev->conf->fw_info.hb_interval,
 		 octep_dev->conf->fw_info.hb_miss_count);
 	queue_delayed_work(octep_wq, &octep_dev->hb_task,
 			   msecs_to_jiffies(octep_dev->conf->fw_info.hb_interval));
 
-	INIT_WORK(&octep_dev->tx_timeout_task, octep_tx_timeout_task);
-	INIT_WORK(&octep_dev->ctrl_mbox_task, octep_ctrl_mbox_task);
-	INIT_DELAYED_WORK(&octep_dev->intr_poll_task, octep_intr_poll_task);
-	octep_dev->poll_non_ioq_intr = true;
-	queue_delayed_work(octep_wq, &octep_dev->intr_poll_task,
-			   msecs_to_jiffies(OCTEP_INTR_POLL_TIME_MSECS));
-
 	netdev->netdev_ops = &octep_netdev_ops;
 	octep_set_ethtool_ops(netdev);
 	netif_carrier_off(netdev);
 
 	netdev->hw_features = NETIF_F_SG;
-	netdev->features |= netdev->hw_features;
+	if (OCTEP_TX_IP_CSUM(octep_dev->conf->fw_info.tx_ol_flags))
+		netdev->hw_features |= (NETIF_F_IP_CSUM | NETIF_F_IPV6_CSUM);
+
+	if (OCTEP_RX_IP_CSUM(octep_dev->conf->fw_info.rx_ol_flags))
+		netdev->hw_features |= NETIF_F_RXCSUM;
 
 	max_rx_pktlen = octep_ctrl_net_get_mtu(octep_dev, OCTEP_CTRL_NET_INVALID_VFID);
 	if (max_rx_pktlen < 0) {
 		dev_err(&octep_dev->pdev->dev,
 			"Failed to get max receive packet size; err = %d\n", max_rx_pktlen);
+		err = max_rx_pktlen;
 		goto register_dev_err;
 	}
 	netdev->min_mtu = OCTEP_MIN_MTU;
 	netdev->max_mtu = max_rx_pktlen - (ETH_HLEN + ETH_FCS_LEN);
 	netdev->mtu = OCTEP_DEFAULT_MTU;
 
+	if (OCTEP_TX_TSO(octep_dev->conf->fw_info.tx_ol_flags)) {
+		netdev->hw_features |= NETIF_F_TSO;
+		netif_set_tso_max_size(netdev, netdev->max_mtu);
+	}
+
+	netdev->features |= netdev->hw_features;
 	err = octep_ctrl_net_get_mac_addr(octep_dev, OCTEP_CTRL_NET_INVALID_VFID,
 					  octep_dev->mac_addr);
 	if (err) {
@@ -1417,6 +1514,21 @@ err_dma_mask:
 	return err;
 }
 
+static int octep_sriov_disable(struct octep_device *oct)
+{
+	struct pci_dev *pdev = oct->pdev;
+
+	if (pci_vfs_assigned(oct->pdev)) {
+		dev_warn(&pdev->dev, "Can't disable SRIOV while VFs are assigned\n");
+		return -EPERM;
+	}
+
+	pci_disable_sriov(pdev);
+	CFG_GET_ACTIVE_VFS(oct->conf) = 0;
+
+	return 0;
+}
+
 /**
  * octep_remove() - Remove Octeon PCI device from driver control.
  *
@@ -1434,6 +1546,7 @@ static void octep_remove(struct pci_dev *pdev)
 		return;
 
 	netdev = oct->netdev;
+	octep_sriov_disable(oct);
 	if (netdev->reg_state == NETREG_REGISTERED)
 		unregister_netdev(netdev);
 
@@ -1444,11 +1557,47 @@ static void octep_remove(struct pci_dev *pdev)
 	pci_disable_device(pdev);
 }
 
+static int octep_sriov_enable(struct octep_device *oct, int num_vfs)
+{
+	struct pci_dev *pdev = oct->pdev;
+	int err;
+
+	CFG_GET_ACTIVE_VFS(oct->conf) = num_vfs;
+	err = pci_enable_sriov(pdev, num_vfs);
+	if (err) {
+		dev_warn(&pdev->dev, "Failed to enable SRIOV err=%d\n", err);
+		CFG_GET_ACTIVE_VFS(oct->conf) = 0;
+		return err;
+	}
+
+	return num_vfs;
+}
+
+static int octep_sriov_configure(struct pci_dev *pdev, int num_vfs)
+{
+	struct octep_device *oct = pci_get_drvdata(pdev);
+	int max_nvfs;
+
+	if (num_vfs == 0)
+		return octep_sriov_disable(oct);
+
+	max_nvfs = CFG_GET_MAX_VFS(oct->conf);
+
+	if (num_vfs > max_nvfs) {
+		dev_err(&pdev->dev, "Invalid VF count Max supported VFs = %d\n",
+			max_nvfs);
+		return -EINVAL;
+	}
+
+	return octep_sriov_enable(oct, num_vfs);
+}
+
 static struct pci_driver octep_driver = {
 	.name = OCTEP_DRV_NAME,
 	.id_table = octep_pci_id_tbl,
 	.probe = octep_probe,
 	.remove = octep_remove,
+	.sriov_configure = octep_sriov_configure,
 };
 
 /**

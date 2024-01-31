@@ -253,9 +253,6 @@ __iwl_mvm_mld_assign_vif_chanctx(struct iwl_mvm *mvm,
 	if (!rcu_access_pointer(link_conf->chanctx_conf))
 		n_active++;
 
-	if (n_active > iwl_mvm_max_active_links(mvm, vif))
-		return -EOPNOTSUPP;
-
 	if (WARN_ON_ONCE(!mvmvif->link[link_id]))
 		return -EINVAL;
 
@@ -271,16 +268,16 @@ __iwl_mvm_mld_assign_vif_chanctx(struct iwl_mvm *mvm,
 		}
 	}
 
+	mvmvif->link[link_id]->phy_ctxt = phy_ctxt;
+
 	if (iwl_mvm_is_esr_supported(mvm->fwrt.trans) && n_active > 1) {
 		mvmvif->link[link_id]->listen_lmac = true;
 		ret = iwl_mvm_esr_mode_active(mvm, vif);
 		if (ret) {
 			IWL_ERR(mvm, "failed to activate ESR mode (%d)\n", ret);
-			return ret;
+			goto out;
 		}
 	}
-
-	mvmvif->link[link_id]->phy_ctxt = phy_ctxt;
 
 	if (switching_chanctx) {
 		/* reactivate if we turned this off during channel switch */
@@ -716,7 +713,7 @@ void iwl_mvm_mld_select_links(struct iwl_mvm *mvm, struct ieee80211_vif *vif,
 		}
 	}
 
-	if (WARN_ON(!new_active_links))
+	if (!new_active_links)
 		return;
 
 	if (vif->active_links != new_active_links)
@@ -1121,16 +1118,11 @@ iwl_mvm_mld_change_vif_links(struct ieee80211_hw *hw,
 			     struct ieee80211_bss_conf *old[IEEE80211_MLD_MAX_NUM_LINKS])
 {
 	struct iwl_mvm_vif_link_info *new_link[IEEE80211_MLD_MAX_NUM_LINKS] = {};
-	unsigned int n_active = iwl_mvm_mld_count_active_links(vif);
 	struct iwl_mvm_vif *mvmvif = iwl_mvm_vif_from_mac80211(vif);
 	struct iwl_mvm *mvm = IWL_MAC80211_GET_MVM(hw);
 	u16 removed = old_links & ~new_links;
 	u16 added = new_links & ~old_links;
 	int err, i;
-
-	if (hweight16(new_links) > 1 &&
-	    n_active > iwl_mvm_max_active_links(mvm, vif))
-		return -EOPNOTSUPP;
 
 	for (i = 0; i < IEEE80211_MLD_MAX_NUM_LINKS; i++) {
 		int r;
@@ -1221,6 +1213,15 @@ iwl_mvm_mld_change_sta_links(struct ieee80211_hw *hw,
 	mutex_unlock(&mvm->mutex);
 
 	return ret;
+}
+
+static bool iwl_mvm_mld_can_activate_links(struct ieee80211_hw *hw,
+					   struct ieee80211_vif *vif,
+					   u16 desired_links)
+{
+	struct iwl_mvm *mvm = IWL_MAC80211_GET_MVM(hw);
+
+	return hweight16(desired_links) <= iwl_mvm_max_active_links(mvm, vif);
 }
 
 const struct ieee80211_ops iwl_mvm_mld_hw_ops = {
@@ -1317,4 +1318,5 @@ const struct ieee80211_ops iwl_mvm_mld_hw_ops = {
 
 	.change_vif_links = iwl_mvm_mld_change_vif_links,
 	.change_sta_links = iwl_mvm_mld_change_sta_links,
+	.can_activate_links = iwl_mvm_mld_can_activate_links,
 };

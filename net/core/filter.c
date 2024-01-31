@@ -83,6 +83,7 @@
 #include <net/netfilter/nf_conntrack_bpf.h>
 #include <net/netkit.h>
 #include <linux/un.h>
+#include <net/xdp_sock_drv.h>
 
 #include "dev.h"
 
@@ -203,7 +204,7 @@ BPF_CALL_3(bpf_skb_get_nlattr_nest, struct sk_buff *, skb, u32, a, u32, x)
 		return 0;
 
 	nla = (struct nlattr *) &skb->data[a];
-	if (nla->nla_len > skb->len - a)
+	if (!nla_ok(nla, skb->len - a))
 		return 0;
 
 	nla = nla_find_nested(nla, x);
@@ -1219,8 +1220,8 @@ void sk_filter_uncharge(struct sock *sk, struct sk_filter *fp)
  */
 static bool __sk_filter_charge(struct sock *sk, struct sk_filter *fp)
 {
+	int optmem_max = READ_ONCE(sock_net(sk)->core.sysctl_optmem_max);
 	u32 filter_size = bpf_prog_size(fp->prog->len);
-	int optmem_max = READ_ONCE(sysctl_optmem_max);
 
 	/* same check as in sock_kmalloc() */
 	if (filter_size <= optmem_max &&
@@ -1550,12 +1551,13 @@ EXPORT_SYMBOL_GPL(sk_attach_filter);
 int sk_reuseport_attach_filter(struct sock_fprog *fprog, struct sock *sk)
 {
 	struct bpf_prog *prog = __get_filter(fprog, sk);
-	int err;
+	int err, optmem_max;
 
 	if (IS_ERR(prog))
 		return PTR_ERR(prog);
 
-	if (bpf_prog_size(prog->len) > READ_ONCE(sysctl_optmem_max))
+	optmem_max = READ_ONCE(sock_net(sk)->core.sysctl_optmem_max);
+	if (bpf_prog_size(prog->len) > optmem_max)
 		err = -ENOMEM;
 	else
 		err = reuseport_attach_prog(sk, prog);
@@ -1594,7 +1596,7 @@ int sk_attach_bpf(u32 ufd, struct sock *sk)
 int sk_reuseport_attach_bpf(u32 ufd, struct sock *sk)
 {
 	struct bpf_prog *prog;
-	int err;
+	int err, optmem_max;
 
 	if (sock_flag(sk, SOCK_FILTER_LOCKED))
 		return -EPERM;
@@ -1622,7 +1624,8 @@ int sk_reuseport_attach_bpf(u32 ufd, struct sock *sk)
 		}
 	} else {
 		/* BPF_PROG_TYPE_SOCKET_FILTER */
-		if (bpf_prog_size(prog->len) > READ_ONCE(sysctl_optmem_max)) {
+		optmem_max = READ_ONCE(sock_net(sk)->core.sysctl_optmem_max);
+		if (bpf_prog_size(prog->len) > optmem_max) {
 			err = -ENOMEM;
 			goto err_prog_put;
 		}
@@ -2602,6 +2605,22 @@ BPF_CALL_2(bpf_msg_cork_bytes, struct sk_msg *, msg, u32, bytes)
 	return 0;
 }
 
+static void sk_msg_reset_curr(struct sk_msg *msg)
+{
+	u32 i = msg->sg.start;
+	u32 len = 0;
+
+	do {
+		len += sk_msg_elem(msg, i)->length;
+		sk_msg_iter_var_next(i);
+		if (len >= msg->sg.size)
+			break;
+	} while (i != msg->sg.end);
+
+	msg->sg.curr = i;
+	msg->sg.copybreak = 0;
+}
+
 static const struct bpf_func_proto bpf_msg_cork_bytes_proto = {
 	.func           = bpf_msg_cork_bytes,
 	.gpl_only       = false,
@@ -2721,6 +2740,7 @@ BPF_CALL_4(bpf_msg_pull_data, struct sk_msg *, msg, u32, start,
 		      msg->sg.end - shift + NR_MSG_FRAG_IDS :
 		      msg->sg.end - shift;
 out:
+	sk_msg_reset_curr(msg);
 	msg->data = sg_virt(&msg->sg.data[first_sge]) + start - offset;
 	msg->data_end = msg->data + bytes;
 	return 0;
@@ -2857,6 +2877,7 @@ BPF_CALL_4(bpf_msg_push_data, struct sk_msg *, msg, u32, start,
 		msg->sg.data[new] = rsge;
 	}
 
+	sk_msg_reset_curr(msg);
 	sk_msg_compute_data_pointers(msg);
 	return 0;
 }
@@ -3025,6 +3046,7 @@ BPF_CALL_4(bpf_msg_pop_data, struct sk_msg *, msg, u32, start,
 
 	sk_mem_uncharge(msg->sk, len - pop);
 	msg->sg.size -= (len - pop);
+	sk_msg_reset_curr(msg);
 	sk_msg_compute_data_pointers(msg);
 	return 0;
 }
@@ -4071,8 +4093,44 @@ static int bpf_xdp_frags_increase_tail(struct xdp_buff *xdp, int offset)
 	memset(skb_frag_address(frag) + skb_frag_size(frag), 0, offset);
 	skb_frag_size_add(frag, offset);
 	sinfo->xdp_frags_size += offset;
+	if (rxq->mem.type == MEM_TYPE_XSK_BUFF_POOL)
+		xsk_buff_get_tail(xdp)->data_end += offset;
 
 	return 0;
+}
+
+static void bpf_xdp_shrink_data_zc(struct xdp_buff *xdp, int shrink,
+				   struct xdp_mem_info *mem_info, bool release)
+{
+	struct xdp_buff *zc_frag = xsk_buff_get_tail(xdp);
+
+	if (release) {
+		xsk_buff_del_tail(zc_frag);
+		__xdp_return(NULL, mem_info, false, zc_frag);
+	} else {
+		zc_frag->data_end -= shrink;
+	}
+}
+
+static bool bpf_xdp_shrink_data(struct xdp_buff *xdp, skb_frag_t *frag,
+				int shrink)
+{
+	struct xdp_mem_info *mem_info = &xdp->rxq->mem;
+	bool release = skb_frag_size(frag) == shrink;
+
+	if (mem_info->type == MEM_TYPE_XSK_BUFF_POOL) {
+		bpf_xdp_shrink_data_zc(xdp, shrink, mem_info, release);
+		goto out;
+	}
+
+	if (release) {
+		struct page *page = skb_frag_page(frag);
+
+		__xdp_return(page_address(page), mem_info, false, NULL);
+	}
+
+out:
+	return release;
 }
 
 static int bpf_xdp_frags_shrink_tail(struct xdp_buff *xdp, int offset)
@@ -4089,12 +4147,7 @@ static int bpf_xdp_frags_shrink_tail(struct xdp_buff *xdp, int offset)
 
 		len_free += shrink;
 		offset -= shrink;
-
-		if (skb_frag_size(frag) == shrink) {
-			struct page *page = skb_frag_page(frag);
-
-			__xdp_return(page_address(page), &xdp->rxq->mem,
-				     false, NULL);
+		if (bpf_xdp_shrink_data(xdp, frag, shrink)) {
 			n_frags_free++;
 		} else {
 			skb_frag_size_sub(frag, shrink);

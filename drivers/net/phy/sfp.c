@@ -274,6 +274,7 @@ struct sfp {
 	struct sfp_eeprom_id id;
 	unsigned int module_power_mW;
 	unsigned int module_t_start_up;
+	unsigned int module_t_wait;
 	unsigned int phy_t_retry;
 
 	unsigned int rate_kbd;
@@ -388,6 +389,12 @@ static void sfp_fixup_fs_10gt(struct sfp *sfp)
 {
 	sfp_fixup_10gbaset_30m(sfp);
 	sfp_fixup_rollball(sfp);
+
+	/* The RollBall fixup is not enough for FS modules, the AQR chip inside
+	 * them does not return 0xffff for PHY ID registers in all MMDs for the
+	 * while initializing. They need a 4 second wait before accessing PHY.
+	 */
+	sfp->module_t_wait = msecs_to_jiffies(4000);
 }
 
 static void sfp_fixup_halny_gsfp(struct sfp *sfp)
@@ -2329,6 +2336,7 @@ static int sfp_sm_mod_probe(struct sfp *sfp, bool report)
 		mask |= SFP_F_RS1;
 
 	sfp->module_t_start_up = T_START_UP;
+	sfp->module_t_wait = T_WAIT;
 	sfp->phy_t_retry = T_PHY_RETRY;
 
 	sfp->state_ignore_mask = 0;
@@ -2566,9 +2574,10 @@ static void sfp_sm_main(struct sfp *sfp, unsigned int event)
 
 		/* We need to check the TX_FAULT state, which is not defined
 		 * while TX_DISABLE is asserted. The earliest we want to do
-		 * anything (such as probe for a PHY) is 50ms.
+		 * anything (such as probe for a PHY) is 50ms (or more on
+		 * specific modules).
 		 */
-		sfp_sm_next(sfp, SFP_S_WAIT, T_WAIT);
+		sfp_sm_next(sfp, SFP_S_WAIT, sfp->module_t_wait);
 		break;
 
 	case SFP_S_WAIT:
@@ -2582,8 +2591,8 @@ static void sfp_sm_main(struct sfp *sfp, unsigned int event)
 			 * deasserting.
 			 */
 			timeout = sfp->module_t_start_up;
-			if (timeout > T_WAIT)
-				timeout -= T_WAIT;
+			if (timeout > sfp->module_t_wait)
+				timeout -= sfp->module_t_wait;
 			else
 				timeout = 1;
 
@@ -3097,7 +3106,7 @@ static int sfp_probe(struct platform_device *pdev)
 	return 0;
 }
 
-static int sfp_remove(struct platform_device *pdev)
+static void sfp_remove(struct platform_device *pdev)
 {
 	struct sfp *sfp = platform_get_drvdata(pdev);
 
@@ -3107,8 +3116,6 @@ static int sfp_remove(struct platform_device *pdev)
 	rtnl_lock();
 	sfp_sm_event(sfp, SFP_E_REMOVE);
 	rtnl_unlock();
-
-	return 0;
 }
 
 static void sfp_shutdown(struct platform_device *pdev)
@@ -3129,7 +3136,7 @@ static void sfp_shutdown(struct platform_device *pdev)
 
 static struct platform_driver sfp_driver = {
 	.probe = sfp_probe,
-	.remove = sfp_remove,
+	.remove_new = sfp_remove,
 	.shutdown = sfp_shutdown,
 	.driver = {
 		.name = "sfp",
