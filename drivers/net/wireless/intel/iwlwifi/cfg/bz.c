@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0 OR BSD-3-Clause
 /*
  * Copyright (C) 2015-2017 Intel Deutschland GmbH
- * Copyright (C) 2018-2023 Intel Corporation
+ * Copyright (C) 2018-2024 Intel Corporation
  */
 #include <linux/module.h>
 #include <linux/stringify.h>
@@ -10,7 +10,7 @@
 #include "fw/api/txq.h"
 
 /* Highest firmware API version supported */
-#define IWL_BZ_UCODE_API_MAX	87
+#define IWL_BZ_UCODE_API_MAX	90
 
 /* Lowest firmware API version supported */
 #define IWL_BZ_UCODE_API_MIN	80
@@ -128,10 +128,6 @@ static const struct iwl_base_params iwl_bz_base_params = {
 #define IWL_DEVICE_BZ							\
 	IWL_DEVICE_BZ_COMMON,						\
 	.ht_params = &iwl_22000_ht_params
-
-#define IWL_DEVICE_GL_A							\
-	IWL_DEVICE_BZ_COMMON,						\
-	.ht_params = &iwl_gl_a_ht_params
 
 /*
  * This size was picked according to 8 MSDUs inside 512 A-MSDUs in an

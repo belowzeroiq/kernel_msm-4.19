@@ -4,7 +4,7 @@
  * Copyright (c) 2008, Jouni Malinen <j@w1.fi>
  * Copyright (c) 2011, Javier Lopez <jlopex@gmail.com>
  * Copyright (c) 2016 - 2017 Intel Deutschland GmbH
- * Copyright (C) 2018 - 2023 Intel Corporation
+ * Copyright (C) 2018 - 2024 Intel Corporation
  */
 
 /*
@@ -196,8 +196,11 @@ static const struct ieee80211_regdomain hwsim_world_regdom_custom_04 = {
 	.reg_rules = {
 		REG_RULE(2412 - 10, 2462 + 10, 40, 0, 20, 0),
 		REG_RULE(2484 - 10, 2484 + 10, 40, 0, 20, 0),
-		REG_RULE(5150 - 10, 5240 + 10, 80, 0, 30, 0),
+		REG_RULE(5150 - 10, 5240 + 10, 80, 0, 30, NL80211_RRF_AUTO_BW),
 		REG_RULE(5260 - 10, 5320 + 10, 80, 0, 30,
+			 NL80211_RRF_DFS_CONCURRENT | NL80211_RRF_DFS |
+			 NL80211_RRF_AUTO_BW),
+		REG_RULE(5500 - 10, 5720 + 10, 160, 0, 30,
 			 NL80211_RRF_DFS_CONCURRENT | NL80211_RRF_DFS),
 		REG_RULE(5745 - 10, 5825 + 10, 80, 0, 30, 0),
 		REG_RULE(5855 - 10, 5925 + 10, 80, 0, 33, 0),
@@ -213,6 +216,7 @@ static const struct ieee80211_regdomain *hwsim_world_regdom_custom[] = {
 
 struct hwsim_vif_priv {
 	u32 magic;
+	u32 skip_beacons;
 	u8 bssid[ETH_ALEN];
 	bool assoc;
 	bool bcn_en;
@@ -2128,6 +2132,16 @@ static int mac80211_hwsim_add_interface(struct ieee80211_hw *hw,
 	return 0;
 }
 
+#ifdef CONFIG_MAC80211_DEBUGFS
+static void mac80211_hwsim_vif_add_debugfs(struct ieee80211_hw *hw,
+					   struct ieee80211_vif *vif)
+{
+	struct hwsim_vif_priv *vp = (void *)vif->drv_priv;
+
+	debugfs_create_u32("skip_beacons", 0600, vif->debugfs_dir,
+			   &vp->skip_beacons);
+}
+#endif
 
 static int mac80211_hwsim_change_interface(struct ieee80211_hw *hw,
 					   struct ieee80211_vif *vif,
@@ -2193,11 +2207,18 @@ static void __mac80211_hwsim_beacon_tx(struct ieee80211_bss_conf *link_conf,
 				       struct ieee80211_vif *vif,
 				       struct sk_buff *skb)
 {
+	struct hwsim_vif_priv *vp = (void *)vif->drv_priv;
 	struct ieee80211_tx_info *info;
 	struct ieee80211_rate *txrate;
 	struct ieee80211_mgmt *mgmt;
 	/* TODO: get MCS */
 	int bitrate = 100;
+
+	if (vp->skip_beacons) {
+		vp->skip_beacons--;
+		dev_kfree_skb(skb);
+		return;
+	}
 
 	info = IEEE80211_SKB_CB(skb);
 	if (ieee80211_hw_check(hw, SUPPORTS_RC_TABLE))
@@ -2284,8 +2305,8 @@ static void mac80211_hwsim_beacon_tx(void *arg, u8 *mac,
 			rcu_dereference(link_conf->chanctx_conf)->def.chan);
 	}
 
-	if (link_conf->csa_active && ieee80211_beacon_cntdwn_is_complete(vif))
-		ieee80211_csa_finish(vif);
+	if (link_conf->csa_active && ieee80211_beacon_cntdwn_is_complete(vif, link_id))
+		ieee80211_csa_finish(vif, link_id);
 }
 
 static enum hrtimer_restart
@@ -2653,10 +2674,11 @@ static int mac80211_hwsim_sta_state(struct ieee80211_hw *hw,
 		return mac80211_hwsim_sta_add(hw, vif, sta);
 
 	/*
-	 * when client is authorized (AP station marked as such),
-	 * enable all links
+	 * in an MLO connection, when client is authorized
+	 * (AP station marked as such), enable all links
 	 */
-	if (vif->type == NL80211_IFTYPE_STATION &&
+	if (ieee80211_vif_is_mld(vif) &&
+	    vif->type == NL80211_IFTYPE_STATION &&
 	    new_state == IEEE80211_STA_AUTHORIZED && !sta->tdls)
 		ieee80211_set_active_links_async(vif,
 						 ieee80211_vif_usable_links(vif));
@@ -3191,6 +3213,47 @@ static void mac80211_hwsim_unassign_vif_chanctx(struct ieee80211_hw *hw,
 			local_bh_enable();
 		}
 	}
+}
+
+static int mac80211_hwsim_switch_vif_chanctx(struct ieee80211_hw *hw,
+					     struct ieee80211_vif_chanctx_switch *vifs,
+					     int n_vifs,
+					     enum ieee80211_chanctx_switch_mode mode)
+{
+	int i;
+
+	if (n_vifs <= 0)
+		return -EINVAL;
+
+	wiphy_dbg(hw->wiphy,
+		  "switch vif channel context mode: %u\n", mode);
+
+	for (i = 0; i < n_vifs; i++) {
+		hwsim_check_chanctx_magic(vifs[i].old_ctx);
+		wiphy_dbg(hw->wiphy,
+			  "switch vif channel context: %d MHz/width: %d/cfreqs:%d/%d MHz -> %d MHz/width: %d/cfreqs:%d/%d MHz\n",
+			  vifs[i].old_ctx->def.chan->center_freq,
+			  vifs[i].old_ctx->def.width,
+			  vifs[i].old_ctx->def.center_freq1,
+			  vifs[i].old_ctx->def.center_freq2,
+			  vifs[i].new_ctx->def.chan->center_freq,
+			  vifs[i].new_ctx->def.width,
+			  vifs[i].new_ctx->def.center_freq1,
+			  vifs[i].new_ctx->def.center_freq2);
+
+		switch (mode) {
+		case CHANCTX_SWMODE_REASSIGN_VIF:
+			hwsim_check_chanctx_magic(vifs[i].new_ctx);
+			break;
+		case CHANCTX_SWMODE_SWAP_CONTEXTS:
+			hwsim_set_chanctx_magic(vifs[i].new_ctx);
+			hwsim_clear_chanctx_magic(vifs[i].old_ctx);
+			break;
+		default:
+			WARN_ON("Invalid mode");
+		}
+	}
+	return 0;
 }
 
 static const char mac80211_hwsim_gstrings_stats[][ETH_GSTRING_LEN] = {
@@ -3857,6 +3920,13 @@ out:
 	return err;
 }
 
+#ifdef CONFIG_MAC80211_DEBUGFS
+#define HWSIM_DEBUGFS_OPS					\
+	.vif_add_debugfs = mac80211_hwsim_vif_add_debugfs,
+#else
+#define HWSIM_DEBUGFS_OPS
+#endif
+
 #define HWSIM_COMMON_OPS					\
 	.tx = mac80211_hwsim_tx,				\
 	.wake_tx_queue = ieee80211_handle_wake_tx_queue,	\
@@ -3881,7 +3951,8 @@ out:
 	.get_et_stats = mac80211_hwsim_get_et_stats,		\
 	.get_et_strings = mac80211_hwsim_get_et_strings,	\
 	.start_pmsr = mac80211_hwsim_start_pmsr,		\
-	.abort_pmsr = mac80211_hwsim_abort_pmsr,
+	.abort_pmsr = mac80211_hwsim_abort_pmsr,		\
+	HWSIM_DEBUGFS_OPS
 
 #define HWSIM_NON_MLO_OPS					\
 	.sta_add = mac80211_hwsim_sta_add,			\
@@ -3895,6 +3966,10 @@ static const struct ieee80211_ops mac80211_hwsim_ops = {
 	HWSIM_NON_MLO_OPS
 	.sw_scan_start = mac80211_hwsim_sw_scan,
 	.sw_scan_complete = mac80211_hwsim_sw_scan_complete,
+	.add_chanctx = ieee80211_emulate_add_chanctx,
+	.remove_chanctx = ieee80211_emulate_remove_chanctx,
+	.change_chanctx = ieee80211_emulate_change_chanctx,
+	.switch_vif_chanctx = ieee80211_emulate_switch_vif_chanctx,
 };
 
 #define HWSIM_CHANCTX_OPS					\
@@ -3906,7 +3981,8 @@ static const struct ieee80211_ops mac80211_hwsim_ops = {
 	.remove_chanctx = mac80211_hwsim_remove_chanctx,	\
 	.change_chanctx = mac80211_hwsim_change_chanctx,	\
 	.assign_vif_chanctx = mac80211_hwsim_assign_vif_chanctx,\
-	.unassign_vif_chanctx = mac80211_hwsim_unassign_vif_chanctx,
+	.unassign_vif_chanctx = mac80211_hwsim_unassign_vif_chanctx, \
+	.switch_vif_chanctx = mac80211_hwsim_switch_vif_chanctx,
 
 static const struct ieee80211_ops mac80211_hwsim_mchan_ops = {
 	HWSIM_COMMON_OPS
@@ -5359,7 +5435,6 @@ static int mac80211_hwsim_new_radio(struct genl_info *info,
 		schedule_timeout_interruptible(1);
 	}
 
-	/* TODO: Add param */
 	wiphy_ext_feature_set(hw->wiphy,
 			      NL80211_EXT_FEATURE_DFS_CONCURRENT);
 

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0 OR BSD-3-Clause
 /*
- * Copyright (C) 2012-2014, 2018-2023 Intel Corporation
+ * Copyright (C) 2012-2014, 2018-2024 Intel Corporation
  * Copyright (C) 2013-2015 Intel Mobile Communications GmbH
  * Copyright (C) 2016-2017 Intel Deutschland GmbH
  */
@@ -161,9 +161,9 @@ static void iwl_mvm_rx_monitor_notif(struct iwl_mvm *mvm,
 	if (!vif || vif->type != NL80211_IFTYPE_STATION)
 		return;
 
-	if (!vif->bss_conf.chandef.chan ||
-	    vif->bss_conf.chandef.chan->band != NL80211_BAND_2GHZ ||
-	    vif->bss_conf.chandef.width < NL80211_CHAN_WIDTH_40)
+	if (!vif->bss_conf.chanreq.oper.chan ||
+	    vif->bss_conf.chanreq.oper.chan->band != NL80211_BAND_2GHZ ||
+	    vif->bss_conf.chanreq.oper.width < NL80211_CHAN_WIDTH_40)
 		return;
 
 	if (!vif->cfg.assoc)
@@ -219,7 +219,7 @@ void iwl_mvm_update_link_smps(struct ieee80211_vif *vif,
 		return;
 
 	if (mvm->fw_static_smps_request &&
-	    link_conf->chandef.width == NL80211_CHAN_WIDTH_160 &&
+	    link_conf->chanreq.oper.width == NL80211_CHAN_WIDTH_160 &&
 	    link_conf->he_support)
 		mode = IEEE80211_SMPS_STATIC;
 
@@ -259,7 +259,7 @@ static void iwl_mvm_rx_thermal_dual_chain_req(struct iwl_mvm *mvm,
 }
 
 /**
- * enum iwl_rx_handler_context context for Rx handler
+ * enum iwl_rx_handler_context: context for Rx handler
  * @RX_HANDLER_SYNC : this means that it will be called in the Rx path
  *	which can't acquire mvm->mutex.
  * @RX_HANDLER_ASYNC_LOCKED : If the handler needs to hold mvm->mutex
@@ -279,7 +279,7 @@ enum iwl_rx_handler_context {
 };
 
 /**
- * struct iwl_rx_handlers handler for FW notification
+ * struct iwl_rx_handlers: handler for FW notification
  * @cmd_id: command id
  * @min_size: minimum size to expect for the notification
  * @context: see &iwl_rx_handler_context
@@ -320,7 +320,8 @@ static const struct iwl_rx_handlers iwl_mvm_rx_handlers[] = {
 		       struct iwl_tlc_update_notif),
 
 	RX_HANDLER(BT_PROFILE_NOTIFICATION, iwl_mvm_rx_bt_coex_notif,
-		   RX_HANDLER_ASYNC_LOCKED, struct iwl_bt_coex_profile_notif),
+		   RX_HANDLER_ASYNC_LOCKED_WIPHY,
+		   struct iwl_bt_coex_profile_notif),
 	RX_HANDLER_NO_SIZE(BEACON_NOTIFICATION, iwl_mvm_rx_beacon_notif,
 			   RX_HANDLER_ASYNC_LOCKED),
 	RX_HANDLER_NO_SIZE(STATISTICS_NOTIFICATION, iwl_mvm_rx_statistics,
@@ -328,7 +329,7 @@ static const struct iwl_rx_handlers iwl_mvm_rx_handlers[] = {
 
 	RX_HANDLER_GRP(STATISTICS_GROUP, STATISTICS_OPER_NOTIF,
 		       iwl_mvm_handle_rx_system_oper_stats,
-		       RX_HANDLER_ASYNC_LOCKED,
+		       RX_HANDLER_ASYNC_LOCKED_WIPHY,
 		       struct iwl_system_statistics_notif_oper),
 	RX_HANDLER_GRP(STATISTICS_GROUP, STATISTICS_OPER_PART1_NOTIF,
 		       iwl_mvm_handle_rx_system_oper_part1_stats,
@@ -688,7 +689,7 @@ static u32 iwl_mvm_min_backoff(struct iwl_mvm *mvm)
 	if (!backoff)
 		return 0;
 
-	dflt_pwr_limit = iwl_acpi_get_pwr_limit(mvm->dev);
+	iwl_bios_get_pwr_limit(&mvm->fwrt, &dflt_pwr_limit);
 
 	while (backoff->pwr) {
 		if (dflt_pwr_limit >= backoff->pwr)
@@ -1200,7 +1201,7 @@ iwl_op_mode_mvm_start(struct iwl_trans *trans, const struct iwl_cfg *cfg,
 	iwl_fw_runtime_init(&mvm->fwrt, trans, fw, &iwl_mvm_fwrt_ops, mvm,
 			    &iwl_mvm_sanitize_ops, mvm, dbgfs_dir);
 
-	iwl_mvm_get_acpi_tables(mvm);
+	iwl_mvm_get_bios_tables(mvm);
 	iwl_uefi_get_sgom_table(trans, &mvm->fwrt);
 	iwl_uefi_get_step_table(trans);
 
@@ -1827,12 +1828,8 @@ static void iwl_mvm_wake_sw_queue(struct iwl_op_mode *op_mode, int hw_queue)
 
 static void iwl_mvm_set_rfkill_state(struct iwl_mvm *mvm)
 {
-	bool state = iwl_mvm_is_radio_killed(mvm);
-
-	if (state)
-		wake_up(&mvm->rx_sync_waitq);
-
-	wiphy_rfkill_set_hw_state(mvm->hw->wiphy, state);
+	wiphy_rfkill_set_hw_state(mvm->hw->wiphy,
+				  iwl_mvm_is_radio_killed(mvm));
 }
 
 void iwl_mvm_set_hw_ctkill_state(struct iwl_mvm *mvm, bool state)
@@ -1857,10 +1854,12 @@ static bool iwl_mvm_set_hw_rfkill_state(struct iwl_op_mode *op_mode, bool state)
 	bool rfkill_safe_init_done = READ_ONCE(mvm->rfkill_safe_init_done);
 	bool unified = iwl_mvm_has_unified_ucode(mvm);
 
-	if (state)
+	if (state) {
 		set_bit(IWL_MVM_STATUS_HW_RFKILL, &mvm->status);
-	else
+		wake_up(&mvm->rx_sync_waitq);
+	} else {
 		clear_bit(IWL_MVM_STATUS_HW_RFKILL, &mvm->status);
+	}
 
 	iwl_mvm_set_rfkill_state(mvm);
 
@@ -1994,7 +1993,7 @@ void iwl_mvm_nic_restart(struct iwl_mvm *mvm, bool fw_error)
 			ieee80211_restart_hw(mvm->hw);
 		} else if (mvm->fwrt.trans->dbg.restart_required) {
 			IWL_DEBUG_INFO(mvm, "FW restart requested after debug collection\n");
-			mvm->fwrt.trans->dbg.restart_required = FALSE;
+			mvm->fwrt.trans->dbg.restart_required = false;
 			ieee80211_restart_hw(mvm->hw);
 		} else if (mvm->trans->trans_cfg->device_family <= IWL_DEVICE_FAMILY_8000) {
 			ieee80211_restart_hw(mvm->hw);
