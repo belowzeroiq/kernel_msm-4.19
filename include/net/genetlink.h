@@ -2,11 +2,19 @@
 #ifndef __NET_GENERIC_NETLINK_H
 #define __NET_GENERIC_NETLINK_H
 
-#include <linux/genetlink.h>
+#include <linux/net.h>
 #include <net/netlink.h>
 #include <net/net_namespace.h>
+#include <uapi/linux/genetlink.h>
 
 #define GENLMSG_DEFAULT_SIZE (NLMSG_DEFAULT_SIZE - GENL_HDRLEN)
+
+/* Non-parallel generic netlink requests are serialized by a global lock. */
+void genl_lock(void);
+void genl_unlock(void);
+
+#define MODULE_ALIAS_GENL_FAMILY(family) \
+ MODULE_ALIAS_NET_PF_PROTO_NAME(PF_NETLINK, NETLINK_GENERIC, "-family-" family)
 
 /* Binding to multicast group requires %CAP_NET_ADMIN */
 #define GENL_MCAST_CAP_NET_ADMIN	BIT(0)
@@ -153,7 +161,7 @@ static inline void *genl_info_userhdr(const struct genl_info *info)
 
 /* Report that a root attribute is missing */
 #define GENL_REQ_ATTR_CHECK(info, attr) ({				\
-	struct genl_info *__info = (info);				\
+	const struct genl_info *__info = (info);			\
 									\
 	NL_REQ_ATTR_CHECK(__info->extack, NULL, __info->attrs, (attr)); \
 })

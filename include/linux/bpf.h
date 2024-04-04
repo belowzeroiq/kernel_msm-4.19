@@ -37,6 +37,7 @@ struct perf_event;
 struct bpf_prog;
 struct bpf_prog_aux;
 struct bpf_map;
+struct bpf_arena;
 struct sock;
 struct seq_file;
 struct btf;
@@ -139,6 +140,9 @@ struct bpf_map_ops {
 	int (*map_mmap)(struct bpf_map *map, struct vm_area_struct *vma);
 	__poll_t (*map_poll)(struct bpf_map *map, struct file *filp,
 			     struct poll_table_struct *pts);
+	unsigned long (*map_get_unmapped_area)(struct file *filep, unsigned long addr,
+					       unsigned long len, unsigned long pgoff,
+					       unsigned long flags);
 
 	/* Functions called by bpf_local_storage maps */
 	int (*map_local_storage_charge)(struct bpf_local_storage_map *smap,
@@ -251,10 +255,7 @@ struct bpf_list_node_kern {
 } __attribute__((aligned(8)));
 
 struct bpf_map {
-	/* The first two cachelines with read-mostly members of which some
-	 * are also accessed in fast-path (e.g. ops, max_entries).
-	 */
-	const struct bpf_map_ops *ops ____cacheline_aligned;
+	const struct bpf_map_ops *ops;
 	struct bpf_map *inner_map_meta;
 #ifdef CONFIG_SECURITY
 	void *security;
@@ -276,17 +277,14 @@ struct bpf_map {
 	struct obj_cgroup *objcg;
 #endif
 	char name[BPF_OBJ_NAME_LEN];
-	/* The 3rd and 4th cacheline with misc members to avoid false sharing
-	 * particularly with refcounting.
-	 */
-	atomic64_t refcnt ____cacheline_aligned;
+	struct mutex freeze_mutex;
+	atomic64_t refcnt;
 	atomic64_t usercnt;
 	/* rcu is used before freeing and work is only used during freeing */
 	union {
 		struct work_struct work;
 		struct rcu_head rcu;
 	};
-	struct mutex freeze_mutex;
 	atomic64_t writecnt;
 	/* 'Ownership' of program-containing map is claimed by the first program
 	 * that is going to use this map or by the first program which FD is
@@ -531,8 +529,8 @@ void bpf_list_head_free(const struct btf_field *field, void *list_head,
 			struct bpf_spin_lock *spin_lock);
 void bpf_rb_root_free(const struct btf_field *field, void *rb_root,
 		      struct bpf_spin_lock *spin_lock);
-
-
+u64 bpf_arena_get_kern_vm_start(struct bpf_arena *arena);
+u64 bpf_arena_get_user_vm_start(struct bpf_arena *arena);
 int bpf_obj_name_cpy(char *dst, const char *src, unsigned int size);
 
 struct bpf_offload_dev;
@@ -714,6 +712,7 @@ enum bpf_arg_type {
 	 * on eBPF program stack
 	 */
 	ARG_PTR_TO_MEM,		/* pointer to valid memory (stack, packet, map value) */
+	ARG_PTR_TO_ARENA,
 
 	ARG_CONST_SIZE,		/* number of bytes accessed from memory */
 	ARG_CONST_SIZE_OR_ZERO,	/* number of bytes accessed from memory or 0 */
@@ -885,6 +884,7 @@ enum bpf_reg_type {
 	 * an explicit null check is required for this struct.
 	 */
 	PTR_TO_MEM,		 /* reg points to valid memory region */
+	PTR_TO_ARENA,
 	PTR_TO_BUF,		 /* reg points to a read/write buffer */
 	PTR_TO_FUNC,		 /* reg points to a bpf program function */
 	CONST_PTR_TO_DYNPTR,	 /* reg points to a const struct bpf_dynptr */
@@ -1116,8 +1116,7 @@ int arch_prepare_bpf_trampoline(struct bpf_tramp_image *im, void *image, void *i
 				void *func_addr);
 void *arch_alloc_bpf_trampoline(unsigned int size);
 void arch_free_bpf_trampoline(void *image, unsigned int size);
-void arch_protect_bpf_trampoline(void *image, unsigned int size);
-void arch_unprotect_bpf_trampoline(void *image, unsigned int size);
+int __must_check arch_protect_bpf_trampoline(void *image, unsigned int size);
 int arch_bpf_trampoline_size(const struct btf_func_model *m, u32 flags,
 			     struct bpf_tramp_links *tlinks, void *func_addr);
 
@@ -1189,7 +1188,6 @@ struct bpf_trampoline {
 	int progs_cnt[BPF_TRAMP_MAX];
 	/* Executable image of trampoline */
 	struct bpf_tramp_image *cur_image;
-	struct module *mod;
 };
 
 struct bpf_attach_target_info {
@@ -1416,6 +1414,7 @@ struct bpf_jit_poke_descriptor {
 struct bpf_ctx_arg_aux {
 	u32 offset;
 	enum bpf_reg_type reg_type;
+	struct btf *btf;
 	u32 btf_id;
 };
 
@@ -1455,11 +1454,11 @@ struct bpf_prog_aux {
 	bool attach_btf_trace; /* true if attaching to BTF-enabled raw tp */
 	bool attach_tracing_prog; /* true if tracing another tracing program */
 	bool func_proto_unreliable;
-	bool sleepable;
 	bool tail_call_reachable;
 	bool xdp_has_frags;
 	bool exception_cb;
 	bool exception_boundary;
+	struct bpf_arena *arena;
 	/* BTF_KIND_FUNC_PROTO for valid attach_btf_id */
 	const struct btf_type *attach_func_proto;
 	/* function name for valid attach_btf_id */
@@ -1540,7 +1539,8 @@ struct bpf_prog {
 				enforce_expected_attach_type:1, /* Enforce expected_attach_type checking at attach time */
 				call_get_stack:1, /* Do we call bpf_get_stack() or bpf_get_stackid() */
 				call_get_func_ip:1, /* Do we call get_func_ip() */
-				tstamp_type_access:1; /* Accessed __sk_buff->tstamp_type */
+				tstamp_type_access:1, /* Accessed __sk_buff->tstamp_type */
+				sleepable:1;	/* BPF program is sleepable */
 	enum bpf_prog_type	type;		/* Type of BPF program */
 	enum bpf_attach_type	expected_attach_type; /* For some prog types */
 	u32			len;		/* Number of filter blocks */
@@ -1605,6 +1605,12 @@ struct bpf_tracing_link {
 	enum bpf_attach_type attach_type;
 	struct bpf_trampoline *trampoline;
 	struct bpf_prog *tgt_prog;
+};
+
+struct bpf_raw_tp_link {
+	struct bpf_link link;
+	struct bpf_raw_event_map *btp;
+	u64 cookie;
 };
 
 struct bpf_link_primer {
@@ -1709,6 +1715,19 @@ struct bpf_struct_ops {
 	struct btf_func_model func_models[BPF_STRUCT_OPS_MAX_NR_MEMBERS];
 };
 
+/* Every member of a struct_ops type has an instance even a member is not
+ * an operator (function pointer). The "info" field will be assigned to
+ * prog->aux->ctx_arg_info of BPF struct_ops programs to provide the
+ * argument information required by the verifier to verify the program.
+ *
+ * btf_ctx_access() will lookup prog->aux->ctx_arg_info to find the
+ * corresponding entry for an given argument.
+ */
+struct bpf_struct_ops_arg_info {
+	struct bpf_ctx_arg_aux *info;
+	u32 cnt;
+};
+
 struct bpf_struct_ops_desc {
 	struct bpf_struct_ops *st_ops;
 
@@ -1716,6 +1735,9 @@ struct bpf_struct_ops_desc {
 	const struct btf_type *value_type;
 	u32 type_id;
 	u32 value_id;
+
+	/* Collection of argument information for each member */
+	struct bpf_struct_ops_arg_info *arg_info;
 };
 
 enum bpf_struct_ops_state {
@@ -1753,7 +1775,9 @@ int bpf_struct_ops_prepare_trampoline(struct bpf_tramp_links *tlinks,
 				      struct bpf_tramp_link *link,
 				      const struct btf_func_model *model,
 				      void *stub_func,
-				      void *image, void *image_end);
+				      void **image, u32 *image_off,
+				      bool allow_alloc);
+void bpf_struct_ops_image_free(void *image);
 static inline bool bpf_try_module_get(const void *data, struct module *owner)
 {
 	if (owner == BPF_MODULE_OWNER)
@@ -1790,6 +1814,7 @@ int bpf_struct_ops_desc_init(struct bpf_struct_ops_desc *st_ops_desc,
 			     struct btf *btf,
 			     struct bpf_verifier_log *log);
 void bpf_map_struct_ops_info_fill(struct bpf_map_info *info, struct bpf_map *map);
+void bpf_struct_ops_desc_release(struct bpf_struct_ops_desc *st_ops_desc);
 #else
 #define register_bpf_struct_ops(st_ops, type) ({ (void *)(st_ops); 0; })
 static inline bool bpf_try_module_get(const void *data, struct module *owner)
@@ -1811,6 +1836,10 @@ static inline int bpf_struct_ops_link_create(union bpf_attr *attr)
 	return -EOPNOTSUPP;
 }
 static inline void bpf_map_struct_ops_info_fill(struct bpf_map_info *info, struct bpf_map *map)
+{
+}
+
+static inline void bpf_struct_ops_desc_release(struct bpf_struct_ops_desc *st_ops_desc)
 {
 }
 
@@ -2088,14 +2117,14 @@ bpf_prog_run_array_uprobe(const struct bpf_prog_array __rcu *array_rcu,
 	old_run_ctx = bpf_set_run_ctx(&run_ctx.run_ctx);
 	item = &array->items[0];
 	while ((prog = READ_ONCE(item->prog))) {
-		if (!prog->aux->sleepable)
+		if (!prog->sleepable)
 			rcu_read_lock();
 
 		run_ctx.bpf_cookie = item->bpf_cookie;
 		ret &= run_prog(prog, ctx);
 		item++;
 
-		if (!prog->aux->sleepable)
+		if (!prog->sleepable)
 			rcu_read_unlock();
 	}
 	bpf_reset_run_ctx(old_run_ctx);
@@ -2195,6 +2224,8 @@ int  generic_map_delete_batch(struct bpf_map *map,
 struct bpf_map *bpf_map_get_curr_or_next(u32 *id);
 struct bpf_prog *bpf_prog_get_curr_or_next(u32 *id);
 
+int bpf_map_alloc_pages(const struct bpf_map *map, gfp_t gfp, int nid,
+			unsigned long nr_pages, struct page **page_array);
 #ifdef CONFIG_MEMCG_KMEM
 void *bpf_map_kmalloc_node(const struct bpf_map *map, size_t size, gfp_t flags,
 			   int node);

@@ -283,6 +283,7 @@ __u32 sysctl_rmem_max __read_mostly = SK_RMEM_MAX;
 EXPORT_SYMBOL(sysctl_rmem_max);
 __u32 sysctl_wmem_default __read_mostly = SK_WMEM_MAX;
 __u32 sysctl_rmem_default __read_mostly = SK_RMEM_MAX;
+int sysctl_mem_pcpu_rsv __read_mostly = SK_MEMORY_PCPU_RESERVE;
 
 int sysctl_tstamp_allow_data __read_mostly = 1;
 
@@ -481,7 +482,7 @@ int __sock_queue_rcv_skb(struct sock *sk, struct sk_buff *skb)
 	unsigned long flags;
 	struct sk_buff_head *list = &sk->sk_receive_queue;
 
-	if (atomic_read(&sk->sk_rmem_alloc) >= sk->sk_rcvbuf) {
+	if (atomic_read(&sk->sk_rmem_alloc) >= READ_ONCE(sk->sk_rcvbuf)) {
 		atomic_inc(&sk->sk_drops);
 		trace_sock_rcvqueue_full(sk, skb);
 		return -ENOMEM;
@@ -551,7 +552,7 @@ int __sk_receive_skb(struct sock *sk, struct sk_buff *skb,
 
 	skb->dev = NULL;
 
-	if (sk_rcvqueues_full(sk, sk->sk_rcvbuf)) {
+	if (sk_rcvqueues_full(sk, READ_ONCE(sk->sk_rcvbuf))) {
 		atomic_inc(&sk->sk_drops);
 		goto discard_and_relse;
 	}
@@ -2052,8 +2053,9 @@ static void sock_copy(struct sock *nsk, const struct sock *osk)
 
 	memcpy(nsk, osk, offsetof(struct sock, sk_dontcopy_begin));
 
-	memcpy(&nsk->sk_dontcopy_end, &osk->sk_dontcopy_end,
-	       prot->obj_size - offsetof(struct sock, sk_dontcopy_end));
+	unsafe_memcpy(&nsk->sk_dontcopy_end, &osk->sk_dontcopy_end,
+		      prot->obj_size - offsetof(struct sock, sk_dontcopy_end),
+		      /* alloc is larger than struct, see sk_prot_alloc() */);
 
 #ifdef CONFIG_SECURITY_NETWORK
 	nsk->sk_security = sptr;
@@ -3336,7 +3338,7 @@ static void sock_def_error_report(struct sock *sk)
 	wq = rcu_dereference(sk->sk_wq);
 	if (skwq_has_sleeper(wq))
 		wake_up_interruptible_poll(&wq->wait, EPOLLERR);
-	sk_wake_async(sk, SOCK_WAKE_IO, POLL_ERR);
+	sk_wake_async_rcu(sk, SOCK_WAKE_IO, POLL_ERR);
 	rcu_read_unlock();
 }
 
@@ -3351,7 +3353,7 @@ void sock_def_readable(struct sock *sk)
 	if (skwq_has_sleeper(wq))
 		wake_up_interruptible_sync_poll(&wq->wait, EPOLLIN | EPOLLPRI |
 						EPOLLRDNORM | EPOLLRDBAND);
-	sk_wake_async(sk, SOCK_WAKE_WAITD, POLL_IN);
+	sk_wake_async_rcu(sk, SOCK_WAKE_WAITD, POLL_IN);
 	rcu_read_unlock();
 }
 
@@ -3371,7 +3373,7 @@ static void sock_def_write_space(struct sock *sk)
 						EPOLLWRNORM | EPOLLWRBAND);
 
 		/* Should agree with poll, otherwise some programs break */
-		sk_wake_async(sk, SOCK_WAKE_SPACE, POLL_OUT);
+		sk_wake_async_rcu(sk, SOCK_WAKE_SPACE, POLL_OUT);
 	}
 
 	rcu_read_unlock();
@@ -3396,7 +3398,7 @@ static void sock_def_write_space_wfree(struct sock *sk)
 						EPOLLWRNORM | EPOLLWRBAND);
 
 		/* Should agree with poll, otherwise some programs break */
-		sk_wake_async(sk, SOCK_WAKE_SPACE, POLL_OUT);
+		sk_wake_async_rcu(sk, SOCK_WAKE_SPACE, POLL_OUT);
 	}
 }
 

@@ -3,6 +3,7 @@
 #include <linux/proc_fs.h>
 #include <linux/seq_file.h>
 #include <net/wext.h>
+#include <net/hotdata.h>
 
 #include "dev.h"
 
@@ -143,7 +144,8 @@ static int softnet_seq_show(struct seq_file *seq, void *v)
 	seq_printf(seq,
 		   "%08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x "
 		   "%08x %08x\n",
-		   sd->processed, sd->dropped, sd->time_squeeze, 0,
+		   sd->processed, atomic_read(&sd->dropped),
+		   sd->time_squeeze, 0,
 		   0, 0, 0, 0, /* was fastroute */
 		   0,	/* was cpu_collision */
 		   sd->received_rps, flow_limit_count,
@@ -183,7 +185,7 @@ static void *ptype_get_idx(struct seq_file *seq, loff_t pos)
 		}
 	}
 
-	list_for_each_entry_rcu(pt, &ptype_all, list) {
+	list_for_each_entry_rcu(pt, &net_hotdata.ptype_all, list) {
 		if (i == pos)
 			return pt;
 		++i;
@@ -231,13 +233,13 @@ static void *ptype_seq_next(struct seq_file *seq, void *v, loff_t *pos)
 			}
 		}
 
-		nxt = ptype_all.next;
+		nxt = net_hotdata.ptype_all.next;
 		goto ptype_all;
 	}
 
 	if (pt->type == htons(ETH_P_ALL)) {
 ptype_all:
-		if (nxt != &ptype_all)
+		if (nxt != &net_hotdata.ptype_all)
 			goto found;
 		hash = 0;
 		nxt = ptype_base[0].next;

@@ -1117,41 +1117,6 @@ static inline void sk_incoming_cpu_update(struct sock *sk)
 		WRITE_ONCE(sk->sk_incoming_cpu, cpu);
 }
 
-static inline void sock_rps_record_flow_hash(__u32 hash)
-{
-#ifdef CONFIG_RPS
-	struct rps_sock_flow_table *sock_flow_table;
-
-	rcu_read_lock();
-	sock_flow_table = rcu_dereference(rps_sock_flow_table);
-	rps_record_sock_flow(sock_flow_table, hash);
-	rcu_read_unlock();
-#endif
-}
-
-static inline void sock_rps_record_flow(const struct sock *sk)
-{
-#ifdef CONFIG_RPS
-	if (static_branch_unlikely(&rfs_needed)) {
-		/* Reading sk->sk_rxhash might incur an expensive cache line
-		 * miss.
-		 *
-		 * TCP_ESTABLISHED does cover almost all states where RFS
-		 * might be useful, and is cheaper [1] than testing :
-		 *	IPv4: inet_sk(sk)->inet_daddr
-		 * 	IPv6: ipv6_addr_any(&sk->sk_v6_daddr)
-		 * OR	an additional socket flag
-		 * [1] : sk_state and sk_prot are in the same cache line.
-		 */
-		if (sk->sk_state == TCP_ESTABLISHED) {
-			/* This READ_ONCE() is paired with the WRITE_ONCE()
-			 * from sock_rps_save_rxhash() and sock_rps_reset_rxhash().
-			 */
-			sock_rps_record_flow_hash(READ_ONCE(sk->sk_rxhash));
-		}
-	}
-#endif
-}
 
 static inline void sock_rps_save_rxhash(struct sock *sk,
 					const struct sk_buff *skb)
@@ -1443,6 +1408,7 @@ sk_memory_allocated(const struct sock *sk)
 
 /* 1 MB per cpu, in page units */
 #define SK_MEMORY_PCPU_RESERVE (1 << (20 - PAGE_SHIFT))
+extern int sysctl_mem_pcpu_rsv;
 
 static inline void
 sk_memory_allocated_add(struct sock *sk, int amt)
@@ -1451,7 +1417,7 @@ sk_memory_allocated_add(struct sock *sk, int amt)
 
 	preempt_disable();
 	local_reserve = __this_cpu_add_return(*sk->sk_prot->per_cpu_fw_alloc, amt);
-	if (local_reserve >= SK_MEMORY_PCPU_RESERVE) {
+	if (local_reserve >= READ_ONCE(sysctl_mem_pcpu_rsv)) {
 		__this_cpu_sub(*sk->sk_prot->per_cpu_fw_alloc, local_reserve);
 		atomic_long_add(local_reserve, sk->sk_prot->memory_allocated);
 	}
@@ -1465,7 +1431,7 @@ sk_memory_allocated_sub(struct sock *sk, int amt)
 
 	preempt_disable();
 	local_reserve = __this_cpu_sub_return(*sk->sk_prot->per_cpu_fw_alloc, amt);
-	if (local_reserve <= -SK_MEMORY_PCPU_RESERVE) {
+	if (local_reserve <= -READ_ONCE(sysctl_mem_pcpu_rsv)) {
 		__this_cpu_sub(*sk->sk_prot->per_cpu_fw_alloc, local_reserve);
 		atomic_long_add(local_reserve, sk->sk_prot->memory_allocated);
 	}
@@ -1790,6 +1756,13 @@ static inline void sock_owned_by_me(const struct sock *sk)
 {
 #ifdef CONFIG_LOCKDEP
 	WARN_ON_ONCE(!lockdep_sock_is_held(sk) && debug_locks);
+#endif
+}
+
+static inline void sock_not_owned_by_me(const struct sock *sk)
+{
+#ifdef CONFIG_LOCKDEP
+	WARN_ON_ONCE(lockdep_sock_is_held(sk) && debug_locks);
 #endif
 }
 
@@ -2538,6 +2511,12 @@ static inline void sk_wake_async(const struct sock *sk, int how, int band)
 		sock_wake_async(rcu_dereference(sk->sk_wq), how, band);
 		rcu_read_unlock();
 	}
+}
+
+static inline void sk_wake_async_rcu(const struct sock *sk, int how, int band)
+{
+	if (unlikely(sock_flag(sk, SOCK_FASYNC)))
+		sock_wake_async(rcu_dereference(sk->sk_wq), how, band);
 }
 
 /* Since sk_{r,w}mem_alloc sums skb->truesize, even a small frame might

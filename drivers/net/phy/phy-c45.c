@@ -1550,6 +1550,8 @@ EXPORT_SYMBOL(genphy_c45_ethtool_get_eee);
  * advertised, but the previously advertised link modes are
  * retained. This allows EEE to be enabled/disabled in a
  * non-destructive way.
+ * Returns either error code, 0 if there was no change, or positive
+ * value if there was a change which triggered auto-neg.
  */
 int genphy_c45_ethtool_set_eee(struct phy_device *phydev,
 			       struct ethtool_keee *data)
@@ -1561,10 +1563,8 @@ int genphy_c45_ethtool_set_eee(struct phy_device *phydev,
 
 		if (!linkmode_empty(adv)) {
 			__ETHTOOL_DECLARE_LINK_MODE_MASK(tmp);
-			bool unsupp;
 
-			unsupp = linkmode_andnot(tmp, adv, phydev->supported_eee);
-			if (unsupp) {
+			if (linkmode_andnot(tmp, adv, phydev->supported_eee)) {
 				phydev_warn(phydev, "At least some EEE link modes are not supported.\n");
 				return -EINVAL;
 			}
@@ -1573,18 +1573,23 @@ int genphy_c45_ethtool_set_eee(struct phy_device *phydev,
 		}
 
 		linkmode_copy(phydev->advertising_eee, adv);
-		phydev->eee_enabled = true;
-	} else {
-		phydev->eee_enabled = false;
 	}
 
-	ret = genphy_c45_an_config_eee_aneg(phydev);
-	if (ret < 0)
-		return ret;
-	if (ret > 0)
-		return phy_restart_aneg(phydev);
+	phydev->eee_enabled = data->eee_enabled;
 
-	return 0;
+	ret = genphy_c45_an_config_eee_aneg(phydev);
+	if (ret > 0) {
+		ret = phy_restart_aneg(phydev);
+		if (ret < 0)
+			return ret;
+
+		/* explicitly return 1, otherwise (ret > 0) value will be
+		 * overwritten by phy_restart_aneg().
+		 */
+		return 1;
+	}
+
+	return ret;
 }
 EXPORT_SYMBOL(genphy_c45_ethtool_set_eee);
 

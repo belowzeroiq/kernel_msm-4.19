@@ -1,12 +1,14 @@
 # SPDX-License-Identifier: GPL-2.0 OR BSD-3-Clause
 
 from collections import namedtuple
+from enum import Enum
 import functools
 import os
 import random
 import socket
 import struct
 from struct import Struct
+import sys
 import yaml
 import ipaddress
 import uuid
@@ -75,6 +77,25 @@ class Netlink:
     NLMSGERR_ATTR_MISS_TYPE = 5
     NLMSGERR_ATTR_MISS_NEST = 6
 
+    # Policy types
+    NL_POLICY_TYPE_ATTR_TYPE = 1
+    NL_POLICY_TYPE_ATTR_MIN_VALUE_S = 2
+    NL_POLICY_TYPE_ATTR_MAX_VALUE_S = 3
+    NL_POLICY_TYPE_ATTR_MIN_VALUE_U = 4
+    NL_POLICY_TYPE_ATTR_MAX_VALUE_U = 5
+    NL_POLICY_TYPE_ATTR_MIN_LENGTH = 6
+    NL_POLICY_TYPE_ATTR_MAX_LENGTH = 7
+    NL_POLICY_TYPE_ATTR_POLICY_IDX = 8
+    NL_POLICY_TYPE_ATTR_POLICY_MAXTYPE = 9
+    NL_POLICY_TYPE_ATTR_BITFIELD32_MASK = 10
+    NL_POLICY_TYPE_ATTR_PAD = 11
+    NL_POLICY_TYPE_ATTR_MASK = 12
+
+    AttrType = Enum('AttrType', ['flag', 'u8', 'u16', 'u32', 'u64',
+                                  's8', 's16', 's32', 's64',
+                                  'binary', 'string', 'nul-string',
+                                  'nested', 'nested-array',
+                                  'bitfield32', 'sint', 'uint'])
 
 class NlError(Exception):
   def __init__(self, nl_msg):
@@ -82,6 +103,10 @@ class NlError(Exception):
 
   def __str__(self):
     return f"Netlink error: {os.strerror(-self.nl_msg.error)}\n{self.nl_msg}"
+
+
+class ConfigError(Exception):
+    pass
 
 
 class NlAttr:
@@ -193,6 +218,8 @@ class NlMsg:
                     self.extack['miss-nest'] = extack.as_scalar('u32')
                 elif extack.type == Netlink.NLMSGERR_ATTR_OFFS:
                     self.extack['bad-attr-offs'] = extack.as_scalar('u32')
+                elif extack.type == Netlink.NLMSGERR_ATTR_POLICY:
+                    self.extack['policy'] = self._decode_policy(extack.raw)
                 else:
                     if 'unknown' not in self.extack:
                         self.extack['unknown'] = []
@@ -209,15 +236,39 @@ class NlMsg:
                             desc += f" ({spec['doc']})"
                         self.extack['miss-type'] = desc
 
+    def _decode_policy(self, raw):
+        policy = {}
+        for attr in NlAttrs(raw):
+            if attr.type == Netlink.NL_POLICY_TYPE_ATTR_TYPE:
+                type = attr.as_scalar('u32')
+                policy['type'] = Netlink.AttrType(type).name
+            elif attr.type == Netlink.NL_POLICY_TYPE_ATTR_MIN_VALUE_S:
+                policy['min-value'] = attr.as_scalar('s64')
+            elif attr.type == Netlink.NL_POLICY_TYPE_ATTR_MAX_VALUE_S:
+                policy['max-value'] = attr.as_scalar('s64')
+            elif attr.type == Netlink.NL_POLICY_TYPE_ATTR_MIN_VALUE_U:
+                policy['min-value'] = attr.as_scalar('u64')
+            elif attr.type == Netlink.NL_POLICY_TYPE_ATTR_MAX_VALUE_U:
+                policy['max-value'] = attr.as_scalar('u64')
+            elif attr.type == Netlink.NL_POLICY_TYPE_ATTR_MIN_LENGTH:
+                policy['min-length'] = attr.as_scalar('u32')
+            elif attr.type == Netlink.NL_POLICY_TYPE_ATTR_MAX_LENGTH:
+                policy['max-length'] = attr.as_scalar('u32')
+            elif attr.type == Netlink.NL_POLICY_TYPE_ATTR_BITFIELD32_MASK:
+                policy['bitfield32-mask'] = attr.as_scalar('u32')
+            elif attr.type == Netlink.NL_POLICY_TYPE_ATTR_MASK:
+                policy['mask'] = attr.as_scalar('u64')
+        return policy
+
     def cmd(self):
         return self.nl_type
 
     def __repr__(self):
-        msg = f"nl_len = {self.nl_len} ({len(self.raw)}) nl_flags = 0x{self.nl_flags:x} nl_type = {self.nl_type}\n"
+        msg = f"nl_len = {self.nl_len} ({len(self.raw)}) nl_flags = 0x{self.nl_flags:x} nl_type = {self.nl_type}"
         if self.error:
-            msg += '\terror: ' + str(self.error)
+            msg += '\n\terror: ' + str(self.error)
         if self.extack:
-            msg += '\textack: ' + repr(self.extack)
+            msg += '\n\textack: ' + repr(self.extack)
         return msg
 
 
@@ -348,6 +399,9 @@ class NetlinkProtocol:
             raise Exception(f'Multicast group "{mcast_name}" not present in the spec')
         return mcast_groups[mcast_name].value
 
+    def msghdr_size(self):
+        return 16
+
 
 class GenlProtocol(NetlinkProtocol):
     def __init__(self, family_name):
@@ -373,6 +427,8 @@ class GenlProtocol(NetlinkProtocol):
             raise Exception(f'Multicast group "{mcast_name}" not present in the family')
         return self.genl_family['mcast'][mcast_name]
 
+    def msghdr_size(self):
+        return super().msghdr_size() + 4
 
 
 class SpaceAttrs:
@@ -400,7 +456,8 @@ class SpaceAttrs:
 
 
 class YnlFamily(SpecFamily):
-    def __init__(self, def_path, schema=None, process_unknown=False):
+    def __init__(self, def_path, schema=None, process_unknown=False,
+                 recv_size=0):
         super().__init__(def_path, schema)
 
         self.include_raw = False
@@ -414,6 +471,17 @@ class YnlFamily(SpecFamily):
                 self.nlproto = GenlProtocol(self.yaml['name'])
         except KeyError:
             raise Exception(f"Family '{self.yaml['name']}' not supported by the kernel")
+
+        self._recv_dbg = False
+        # Note that netlink will use conservative (min) message size for
+        # the first dump recv() on the socket, our setting will only matter
+        # from the second recv() on.
+        self._recv_size = recv_size if recv_size else 131072
+        # Netlink will always allocate at least PAGE_SIZE - sizeof(skb_shinfo)
+        # for a message, so smaller receive sizes will lead to truncation.
+        # Note that the min size for other families may be larger than 4k!
+        if self._recv_size < 4000:
+            raise ConfigError()
 
         self.sock = socket.socket(socket.AF_NETLINK, socket.SOCK_RAW, self.nlproto.proto_num)
         self.sock.setsockopt(Netlink.SOL_NETLINK, Netlink.NETLINK_CAP_ACK, 1)
@@ -438,6 +506,37 @@ class YnlFamily(SpecFamily):
         self.sock.setsockopt(Netlink.SOL_NETLINK, Netlink.NETLINK_ADD_MEMBERSHIP,
                              mcast_id)
 
+    def set_recv_dbg(self, enabled):
+        self._recv_dbg = enabled
+
+    def _recv_dbg_print(self, reply, nl_msgs):
+        if not self._recv_dbg:
+            return
+        print("Recv: read", len(reply), "bytes,",
+              len(nl_msgs.msgs), "messages", file=sys.stderr)
+        for nl_msg in nl_msgs:
+            print("  ", nl_msg, file=sys.stderr)
+
+    def _encode_enum(self, attr_spec, value):
+        enum = self.consts[attr_spec['enum']]
+        if enum.type == 'flags' or attr_spec.get('enum-as-flags', False):
+            scalar = 0
+            if isinstance(value, str):
+                value = [value]
+            for single_value in value:
+                scalar += enum.entries[single_value].user_value(as_flags = True)
+            return scalar
+        else:
+            return enum.entries[value].user_value()
+
+    def _get_scalar(self, attr_spec, value):
+        try:
+            return int(value)
+        except (ValueError, TypeError) as e:
+            if 'enum' not in attr_spec:
+                raise e
+        return self._encode_enum(attr_spec, value)
+
     def _add_attr(self, space, name, value, search_attrs):
         try:
             attr = self.attr_sets[space][name]
@@ -459,6 +558,9 @@ class YnlFamily(SpecFamily):
                 attr_payload += self._add_attr(attr['nested-attributes'],
                                                subname, subvalue, sub_attrs)
         elif attr["type"] == 'flag':
+            if not value:
+                # If value is absent or false then skip attribute creation.
+                return b''
             attr_payload = b''
         elif attr["type"] == 'string':
             attr_payload = str(value).encode('ascii') + b'\x00'
@@ -471,16 +573,18 @@ class YnlFamily(SpecFamily):
                 attr_payload = self._encode_struct(attr.struct_name, value)
             else:
                 raise Exception(f'Unknown type for binary attribute, value: {value}')
-        elif attr.is_auto_scalar:
-            scalar = int(value)
-            real_type = attr["type"][0] + ('32' if scalar.bit_length() <= 32 else '64')
-            format = NlAttr.get_format(real_type, attr.byte_order)
-            attr_payload = format.pack(int(value))
-        elif attr['type'] in NlAttr.type_formats:
-            format = NlAttr.get_format(attr['type'], attr.byte_order)
-            attr_payload = format.pack(int(value))
+        elif attr['type'] in NlAttr.type_formats or attr.is_auto_scalar:
+            scalar = self._get_scalar(attr, value)
+            if attr.is_auto_scalar:
+                attr_type = attr["type"][0] + ('32' if scalar.bit_length() <= 32 else '64')
+            else:
+                attr_type = attr["type"]
+            format = NlAttr.get_format(attr_type, attr.byte_order)
+            attr_payload = format.pack(scalar)
         elif attr['type'] in "bitfield32":
-            attr_payload = struct.pack("II", int(value["value"]), int(value["selector"]))
+            scalar_value = self._get_scalar(attr, value["value"])
+            scalar_selector = self._get_scalar(attr, value["selector"])
+            attr_payload = struct.pack("II", scalar_value, scalar_selector)
         elif attr['type'] == 'sub-message':
             msg_format = self._resolve_selector(attr, search_attrs)
             attr_payload = b''
@@ -535,6 +639,16 @@ class YnlFamily(SpecFamily):
 
             subattrs = self._decode(NlAttrs(item.raw), attr_spec['nested-attributes'])
             decoded.append({ item.type: subattrs })
+        return decoded
+
+    def _decode_nest_type_value(self, attr, attr_spec):
+        decoded = {}
+        value = attr
+        for name in attr_spec['type-value']:
+            value = NlAttr(value.raw, 0)
+            decoded[name] = value.type
+        subattrs = self._decode(NlAttrs(value.raw), attr_spec['nested-attributes'])
+        decoded.update(subattrs)
         return decoded
 
     def _decode_unknown(self, attr):
@@ -628,6 +742,8 @@ class YnlFamily(SpecFamily):
                 decoded = {"value": value, "selector": selector}
             elif attr_spec["type"] == 'sub-message':
                 decoded = self._decode_sub_msg(attr, attr_spec, search_attrs)
+            elif attr_spec["type"] == 'nest-type-value':
+                decoded = self._decode_nest_type_value(attr, attr_spec)
             else:
                 if not self.process_unknown:
                     raise Exception(f'Unknown {attr_spec["type"]} with name {attr_spec["name"]}')
@@ -668,7 +784,7 @@ class YnlFamily(SpecFamily):
             return
 
         msg = self.nlproto.decode(self, NlMsg(request, 0, op.attr_set))
-        offset = 20 + self._struct_size(op.fixed_header)
+        offset = self.nlproto.msghdr_size() + self._struct_size(op.fixed_header)
         path = self._decode_extack_path(msg.raw_attrs, op.attr_set, offset,
                                         extack['bad-attr-offs'])
         if path:
@@ -749,7 +865,10 @@ class YnlFamily(SpecFamily):
         if display_hint == 'mac':
             formatted = ':'.join('%02x' % b for b in raw)
         elif display_hint == 'hex':
-            formatted = bytes.hex(raw, ' ')
+            if isinstance(raw, int):
+                formatted = hex(raw)
+            else:
+                formatted = bytes.hex(raw, ' ')
         elif display_hint in [ 'ipv4', 'ipv6' ]:
             formatted = format(ipaddress.ip_address(raw))
         elif display_hint == 'uuid':
@@ -774,11 +893,12 @@ class YnlFamily(SpecFamily):
     def check_ntf(self):
         while True:
             try:
-                reply = self.sock.recv(128 * 1024, socket.MSG_DONTWAIT)
+                reply = self.sock.recv(self._recv_size, socket.MSG_DONTWAIT)
             except BlockingIOError:
                 return
 
             nms = NlMsgs(reply)
+            self._recv_dbg_print(reply, nms)
             for nl_msg in nms:
                 if nl_msg.error:
                     print("Netlink error in ntf!?", os.strerror(-nl_msg.error))
@@ -829,8 +949,9 @@ class YnlFamily(SpecFamily):
         done = False
         rsp = []
         while not done:
-            reply = self.sock.recv(128 * 1024)
+            reply = self.sock.recv(self._recv_size)
             nms = NlMsgs(reply, attr_space=op.attr_set)
+            self._recv_dbg_print(reply, nms)
             for nl_msg in nms:
                 if nl_msg.extack:
                     self._decode_extack(msg, op, nl_msg.extack)

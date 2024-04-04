@@ -100,6 +100,8 @@
 #define DP83822_WOL_CLR_INDICATION BIT(11)
 
 /* RCSR bits */
+#define DP83822_RMII_MODE_EN	BIT(5)
+#define DP83822_RMII_MODE_SEL	BIT(7)
 #define DP83822_RGMII_MODE_EN	BIT(9)
 #define DP83822_RX_CLK_SHIFT	BIT(12)
 #define DP83822_TX_CLK_SHIFT	BIT(11)
@@ -400,7 +402,7 @@ static int dp83822_config_init(struct phy_device *phydev)
 {
 	struct dp83822_private *dp83822 = phydev->priv;
 	struct device *dev = &phydev->mdio.dev;
-	int rgmii_delay;
+	int rgmii_delay = 0;
 	s32 rx_int_delay;
 	s32 tx_int_delay;
 	int err = 0;
@@ -410,30 +412,33 @@ static int dp83822_config_init(struct phy_device *phydev)
 		rx_int_delay = phy_get_internal_delay(phydev, dev, NULL, 0,
 						      true);
 
-		if (rx_int_delay <= 0)
-			rgmii_delay = 0;
-		else
-			rgmii_delay = DP83822_RX_CLK_SHIFT;
+		/* Set DP83822_RX_CLK_SHIFT to enable rx clk internal delay */
+		if (rx_int_delay > 0)
+			rgmii_delay |= DP83822_RX_CLK_SHIFT;
 
 		tx_int_delay = phy_get_internal_delay(phydev, dev, NULL, 0,
 						      false);
+
+		/* Set DP83822_TX_CLK_SHIFT to disable tx clk internal delay */
 		if (tx_int_delay <= 0)
-			rgmii_delay &= ~DP83822_TX_CLK_SHIFT;
-		else
 			rgmii_delay |= DP83822_TX_CLK_SHIFT;
 
-		if (rgmii_delay) {
-			err = phy_set_bits_mmd(phydev, DP83822_DEVADDR,
-					       MII_DP83822_RCSR, rgmii_delay);
-			if (err)
-				return err;
-		}
+		err = phy_modify_mmd(phydev, DP83822_DEVADDR, MII_DP83822_RCSR,
+				     DP83822_RX_CLK_SHIFT | DP83822_TX_CLK_SHIFT, rgmii_delay);
+		if (err)
+			return err;
 
-		phy_set_bits_mmd(phydev, DP83822_DEVADDR,
-					MII_DP83822_RCSR, DP83822_RGMII_MODE_EN);
+		err = phy_set_bits_mmd(phydev, DP83822_DEVADDR,
+				       MII_DP83822_RCSR, DP83822_RGMII_MODE_EN);
+
+		if (err)
+			return err;
 	} else {
-		phy_clear_bits_mmd(phydev, DP83822_DEVADDR,
-					MII_DP83822_RCSR, DP83822_RGMII_MODE_EN);
+		err = phy_clear_bits_mmd(phydev, DP83822_DEVADDR,
+					 MII_DP83822_RCSR, DP83822_RGMII_MODE_EN);
+
+		if (err)
+			return err;
 	}
 
 	if (dp83822->fx_enabled) {
@@ -494,11 +499,53 @@ static int dp83822_config_init(struct phy_device *phydev)
 	return dp8382x_disable_wol(phydev);
 }
 
+static int dp83826_config_rmii_mode(struct phy_device *phydev)
+{
+	struct device *dev = &phydev->mdio.dev;
+	const char *of_val;
+	int ret;
+
+	if (!device_property_read_string(dev, "ti,rmii-mode", &of_val)) {
+		if (strcmp(of_val, "master") == 0) {
+			ret = phy_clear_bits_mmd(phydev, DP83822_DEVADDR, MII_DP83822_RCSR,
+						 DP83822_RMII_MODE_SEL);
+		} else if (strcmp(of_val, "slave") == 0) {
+			ret = phy_set_bits_mmd(phydev, DP83822_DEVADDR, MII_DP83822_RCSR,
+					       DP83822_RMII_MODE_SEL);
+		} else {
+			phydev_err(phydev, "Invalid value for ti,rmii-mode property (%s)\n",
+				   of_val);
+			ret = -EINVAL;
+		}
+
+		if (ret)
+			return ret;
+	}
+
+	return 0;
+}
+
 static int dp83826_config_init(struct phy_device *phydev)
 {
 	struct dp83822_private *dp83822 = phydev->priv;
 	u16 val, mask;
 	int ret;
+
+	if (phydev->interface == PHY_INTERFACE_MODE_RMII) {
+		ret = phy_set_bits_mmd(phydev, DP83822_DEVADDR, MII_DP83822_RCSR,
+				       DP83822_RMII_MODE_EN);
+		if (ret)
+			return ret;
+
+		ret = dp83826_config_rmii_mode(phydev);
+		if (ret)
+			return ret;
+	} else {
+		ret = phy_clear_bits_mmd(phydev, DP83822_DEVADDR, MII_DP83822_RCSR,
+					 DP83822_RMII_MODE_EN);
+		if (ret)
+			return ret;
+	}
 
 	if (dp83822->cfg_dac_minus != DP83826_CFG_DAC_MINUS_DEFAULT) {
 		val = FIELD_PREP(DP83826_VOD_CFG1_MINUS_MDI_MASK, dp83822->cfg_dac_minus) |
@@ -528,7 +575,7 @@ static int dp83826_config_init(struct phy_device *phydev)
 			return ret;
 	}
 
-	return 0;
+	return dp8382x_disable_wol(phydev);
 }
 
 static int dp8382x_config_init(struct phy_device *phydev)

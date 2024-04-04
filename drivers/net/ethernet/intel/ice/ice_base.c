@@ -190,15 +190,13 @@ static void ice_free_q_vector(struct ice_vsi *vsi, int v_idx)
 	q_vector = vsi->q_vectors[v_idx];
 
 	ice_for_each_tx_ring(tx_ring, q_vector->tx) {
-		if (vsi->netdev)
-			netif_queue_set_napi(vsi->netdev, tx_ring->q_index,
-					     NETDEV_QUEUE_TYPE_TX, NULL);
+		ice_queue_set_napi(vsi, tx_ring->q_index, NETDEV_QUEUE_TYPE_TX,
+				   NULL);
 		tx_ring->q_vector = NULL;
 	}
 	ice_for_each_rx_ring(rx_ring, q_vector->rx) {
-		if (vsi->netdev)
-			netif_queue_set_napi(vsi->netdev, rx_ring->q_index,
-					     NETDEV_QUEUE_TYPE_RX, NULL);
+		ice_queue_set_napi(vsi, rx_ring->q_index, NETDEV_QUEUE_TYPE_RX,
+				   NULL);
 		rx_ring->q_vector = NULL;
 	}
 
@@ -266,30 +264,6 @@ static u16 ice_calc_txq_handle(struct ice_vsi *vsi, struct ice_tx_ring *ring, u8
 }
 
 /**
- * ice_eswitch_calc_txq_handle
- * @ring: pointer to ring which unique index is needed
- *
- * To correctly work with many netdevs ring->q_index of Tx rings on switchdev
- * VSI can repeat. Hardware ring setup requires unique q_index. Calculate it
- * here by finding index in vsi->tx_rings of this ring.
- *
- * Return ICE_INVAL_Q_INDEX when index wasn't found. Should never happen,
- * because VSI is get from ring->vsi, so it has to be present in this VSI.
- */
-static u16 ice_eswitch_calc_txq_handle(struct ice_tx_ring *ring)
-{
-	const struct ice_vsi *vsi = ring->vsi;
-	int i;
-
-	ice_for_each_txq(vsi, i) {
-		if (vsi->tx_rings[i] == ring)
-			return i;
-	}
-
-	return ICE_INVAL_Q_INDEX;
-}
-
-/**
  * ice_cfg_xps_tx_ring - Configure XPS for a Tx ring
  * @ring: The Tx ring to configure
  *
@@ -354,9 +328,6 @@ ice_setup_tx_ctx(struct ice_tx_ring *ring, struct ice_tlan_ctx *tlan_ctx, u16 pf
 		/* Firmware expects vmvf_num to be absolute VF ID */
 		tlan_ctx->vmvf_num = hw->func_caps.vf_base_id + vsi->vf->vf_id;
 		tlan_ctx->vmvf_type = ICE_TLAN_CTX_VMVF_TYPE_VF;
-		break;
-	case ICE_VSI_SWITCHDEV_CTRL:
-		tlan_ctx->vmvf_type = ICE_TLAN_CTX_VMVF_TYPE_VMQ;
 		break;
 	default:
 		return;
@@ -480,6 +451,14 @@ static int ice_setup_rx_ctx(struct ice_rx_ring *ring)
 
 	/* Rx queue threshold in units of 64 */
 	rlan_ctx.lrxqthresh = 1;
+
+	/* PF acts as uplink for switchdev; set flex descriptor with src_vsi
+	 * metadata and flags to allow redirecting to PR netdev
+	 */
+	if (ice_is_eswitch_mode_switchdev(vsi->back)) {
+		ring->flags |= ICE_RX_FLAGS_MULTIDEV;
+		rxdid = ICE_RXDID_FLEX_NIC_2;
+	}
 
 	/* Enable Flexible Descriptors in the queue context which
 	 * allows this driver to select a specific receive descriptor format
@@ -921,14 +900,7 @@ ice_vsi_cfg_txq(struct ice_vsi *vsi, struct ice_tx_ring *ring,
 	/* Add unique software queue handle of the Tx queue per
 	 * TC into the VSI Tx ring
 	 */
-	if (vsi->type == ICE_VSI_SWITCHDEV_CTRL) {
-		ring->q_handle = ice_eswitch_calc_txq_handle(ring);
-
-		if (ring->q_handle == ICE_INVAL_Q_INDEX)
-			return -ENODEV;
-	} else {
-		ring->q_handle = ice_calc_txq_handle(vsi, ring, tc);
-	}
+	ring->q_handle = ice_calc_txq_handle(vsi, ring, tc);
 
 	if (ch)
 		status = ice_ena_vsi_txq(vsi->port_info, ch->ch_vsi->idx, 0,
@@ -958,7 +930,7 @@ ice_vsi_cfg_txq(struct ice_vsi *vsi, struct ice_tx_ring *ring,
 int ice_vsi_cfg_single_txq(struct ice_vsi *vsi, struct ice_tx_ring **tx_rings,
 			   u16 q_idx)
 {
-	DEFINE_FLEX(struct ice_aqc_add_tx_qgrp, qg_buf, txqs, 1);
+	DEFINE_RAW_FLEX(struct ice_aqc_add_tx_qgrp, qg_buf, txqs, 1);
 
 	if (q_idx >= vsi->alloc_txq || !tx_rings || !tx_rings[q_idx])
 		return -EINVAL;
@@ -980,7 +952,7 @@ int ice_vsi_cfg_single_txq(struct ice_vsi *vsi, struct ice_tx_ring **tx_rings,
 static int
 ice_vsi_cfg_txqs(struct ice_vsi *vsi, struct ice_tx_ring **rings, u16 count)
 {
-	DEFINE_FLEX(struct ice_aqc_add_tx_qgrp, qg_buf, txqs, 1);
+	DEFINE_RAW_FLEX(struct ice_aqc_add_tx_qgrp, qg_buf, txqs, 1);
 	int err = 0;
 	u16 q_idx;
 

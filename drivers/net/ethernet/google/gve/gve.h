@@ -9,6 +9,7 @@
 
 #include <linux/dma-mapping.h>
 #include <linux/dmapool.h>
+#include <linux/ethtool_netlink.h>
 #include <linux/netdevice.h>
 #include <linux/pci.h>
 #include <linux/u64_stats_sync.h>
@@ -49,7 +50,13 @@
 /* PTYPEs are always 10 bits. */
 #define GVE_NUM_PTYPES	1024
 
+/* Default minimum ring size */
+#define GVE_DEFAULT_MIN_TX_RING_SIZE 256
+#define GVE_DEFAULT_MIN_RX_RING_SIZE 512
+
 #define GVE_DEFAULT_RX_BUFFER_SIZE 2048
+
+#define GVE_MAX_RX_BUFFER_SIZE 4096
 
 #define GVE_DEFAULT_RX_BUFFER_OFFSET 2048
 
@@ -57,8 +64,9 @@
 
 #define GVE_GQ_TX_MIN_PKT_DESC_BYTES 182
 
+#define GVE_DEFAULT_HEADER_BUFFER_SIZE 128
+
 #define DQO_QPL_DEFAULT_TX_PAGES 512
-#define DQO_QPL_DEFAULT_RX_PAGES 2048
 
 /* Maximum TSO size supported on DQO */
 #define GVE_DQO_TX_MAX	0x3FFFF
@@ -148,6 +156,11 @@ struct gve_rx_compl_queue_dqo {
 	 */
 	u32 head;
 	u32 mask; /* Mask for indices to the size of the ring */
+};
+
+struct gve_header_buf {
+	u8 *data;
+	dma_addr_t addr;
 };
 
 /* Stores state for tracking buffers posted to HW */
@@ -252,19 +265,26 @@ struct gve_rx_ring {
 
 			/* track number of used buffers */
 			u16 used_buf_states_cnt;
+
+			/* Address info of the buffers for header-split */
+			struct gve_header_buf hdr_bufs;
 		} dqo;
 	};
 
 	u64 rbytes; /* free-running bytes received */
+	u64 rx_hsplit_bytes; /* free-running header bytes received */
 	u64 rpackets; /* free-running packets received */
 	u32 cnt; /* free-running total number of completed packets */
 	u32 fill_cnt; /* free-running total number of descs and buffs posted */
 	u32 mask; /* masks the cnt and fill_cnt to the size of the ring */
+	u64 rx_hsplit_pkt; /* free-running packets with headers split */
 	u64 rx_copybreak_pkt; /* free-running count of copybreak packets */
 	u64 rx_copied_pkt; /* free-running total number of copied packets */
 	u64 rx_skb_alloc_fail; /* free-running count of skb alloc fails */
 	u64 rx_buf_alloc_fail; /* free-running count of buffer alloc fails */
 	u64 rx_desc_err_dropped_pkt; /* free-running count of packets dropped by descriptor error */
+	/* free-running count of unsplit packets due to header buffer overflow or hdr_len is 0 */
+	u64 rx_hsplit_unsplit_pkt;
 	u64 rx_cont_packet_cnt; /* free-running multi-fragment packets received */
 	u64 rx_frag_flip_cnt; /* free-running count of rx segments where page_flip was used */
 	u64 rx_frag_copy_cnt; /* free-running count of rx segments copied */
@@ -604,11 +624,6 @@ struct gve_qpl_config {
 	unsigned long *qpl_id_map; /* bitmap of used qpl ids */
 };
 
-struct gve_options_dqo_rda {
-	u16 tx_comp_ring_entries; /* number of tx_comp descriptors */
-	u16 rx_buff_ring_entries; /* number of rx_buff descriptors */
-};
-
 struct gve_irq_db {
 	__be32 index;
 } ____cacheline_aligned;
@@ -664,6 +679,7 @@ struct gve_rx_alloc_rings_cfg {
 	struct gve_qpl_config *qpl_cfg;
 
 	u16 ring_size;
+	u16 packet_buffer_size;
 	bool raw_addressing;
 	bool enable_header_split;
 
@@ -700,9 +716,13 @@ struct gve_priv {
 	u16 num_event_counters;
 	u16 tx_desc_cnt; /* num desc per ring */
 	u16 rx_desc_cnt; /* num desc per ring */
+	u16 max_tx_desc_cnt;
+	u16 max_rx_desc_cnt;
+	u16 min_tx_desc_cnt;
+	u16 min_rx_desc_cnt;
+	bool modify_ring_size_enabled;
+	bool default_min_ring_size;
 	u16 tx_pages_per_qpl; /* Suggested number of pages per qpl for TX queues by NIC */
-	u16 rx_pages_per_qpl; /* Suggested number of pages per qpl for RX queues by NIC */
-	u16 rx_data_slot_cnt; /* rx buffer length */
 	u64 max_registered_pages;
 	u64 num_registered_pages; /* num pages registered with NIC */
 	struct bpf_prog *xdp_prog; /* XDP BPF program */
@@ -774,17 +794,20 @@ struct gve_priv {
 	u64 link_speed;
 	bool up_before_suspend; /* True if dev was up before suspend */
 
-	struct gve_options_dqo_rda options_dqo_rda;
 	struct gve_ptype_lut *ptype_lut_dqo;
 
 	/* Must be a power of two. */
-	int data_buffer_size_dqo;
+	u16 data_buffer_size_dqo;
+	u16 max_rx_buffer_size; /* device limit */
 
 	enum gve_queue_format queue_format;
 
 	/* Interrupt coalescing settings */
 	u32 tx_coalesce_usecs;
 	u32 rx_coalesce_usecs;
+
+	u16 header_buf_size; /* device configured, header-split supported if non-zero */
+	bool header_split_enabled; /* True if the header split is enabled by the user */
 };
 
 enum gve_service_task_flags_bit {
@@ -1022,6 +1045,14 @@ static inline u32 gve_rx_start_qpl_id(const struct gve_queue_config *tx_cfg)
 	return gve_get_rx_qpl_id(tx_cfg, 0);
 }
 
+static inline u32 gve_get_rx_pages_per_qpl_dqo(u32 rx_desc_cnt)
+{
+	/* For DQO, page count should be more than ring size for
+	 * out-of-order completions. Set it to two times of ring size.
+	 */
+	return 2 * rx_desc_cnt;
+}
+
 /* Returns a pointer to the next available tx qpl in the list of qpls */
 static inline
 struct gve_queue_page_list *gve_assign_tx_qpl(struct gve_tx_alloc_rings_cfg *cfg,
@@ -1122,9 +1153,20 @@ void gve_rx_free_rings_gqi(struct gve_priv *priv,
 			   struct gve_rx_alloc_rings_cfg *cfg);
 void gve_rx_start_ring_gqi(struct gve_priv *priv, int idx);
 void gve_rx_stop_ring_gqi(struct gve_priv *priv, int idx);
+u16 gve_get_pkt_buf_size(const struct gve_priv *priv, bool enable_hplit);
+bool gve_header_split_supported(const struct gve_priv *priv);
+int gve_set_hsplit_config(struct gve_priv *priv, u8 tcp_data_split);
 /* Reset */
 void gve_schedule_reset(struct gve_priv *priv);
 int gve_reset(struct gve_priv *priv, bool attempt_teardown);
+void gve_get_curr_alloc_cfgs(struct gve_priv *priv,
+			     struct gve_qpls_alloc_cfg *qpls_alloc_cfg,
+			     struct gve_tx_alloc_rings_cfg *tx_alloc_cfg,
+			     struct gve_rx_alloc_rings_cfg *rx_alloc_cfg);
+int gve_adjust_config(struct gve_priv *priv,
+		      struct gve_qpls_alloc_cfg *qpls_alloc_cfg,
+		      struct gve_tx_alloc_rings_cfg *tx_alloc_cfg,
+		      struct gve_rx_alloc_rings_cfg *rx_alloc_cfg);
 int gve_adjust_queues(struct gve_priv *priv,
 		      struct gve_queue_config new_rx_config,
 		      struct gve_queue_config new_tx_config);
