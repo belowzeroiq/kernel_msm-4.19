@@ -856,6 +856,11 @@ int ice_reset_vf(struct ice_vf *vf, u32 flags)
 		return 0;
 	}
 
+	if (flags & ICE_VF_RESET_LOCK)
+		mutex_lock(&vf->cfg_lock);
+	else
+		lockdep_assert_held(&vf->cfg_lock);
+
 	lag = pf->lag;
 	mutex_lock(&pf->lag_mutex);
 	if (lag && lag->bonded && lag->primary) {
@@ -866,11 +871,6 @@ int ice_reset_vf(struct ice_vf *vf, u32 flags)
 		else
 			act_prt = ICE_LAG_INVALID_PORT;
 	}
-
-	if (flags & ICE_VF_RESET_LOCK)
-		mutex_lock(&vf->cfg_lock);
-	else
-		lockdep_assert_held(&vf->cfg_lock);
 
 	if (ice_is_vf_disabled(vf)) {
 		vsi = ice_get_vf_vsi(vf);
@@ -956,13 +956,13 @@ int ice_reset_vf(struct ice_vf *vf, u32 flags)
 	ice_mbx_clear_malvf(&vf->mbx_info);
 
 out_unlock:
-	if (flags & ICE_VF_RESET_LOCK)
-		mutex_unlock(&vf->cfg_lock);
-
 	if (lag && lag->bonded && lag->primary &&
 	    act_prt != ICE_LAG_INVALID_PORT)
 		ice_lag_move_vf_nodes_cfg(lag, pri_prt, act_prt);
 	mutex_unlock(&pf->lag_mutex);
+
+	if (flags & ICE_VF_RESET_LOCK)
+		mutex_unlock(&vf->cfg_lock);
 
 	return err;
 }
@@ -992,9 +992,12 @@ void ice_initialize_vf_entry(struct ice_vf *vf)
 
 	/* assign default capabilities */
 	vf->spoofchk = true;
-	vf->num_vf_qs = vfs->num_qps_per;
 	ice_vc_set_default_allowlist(vf);
 	ice_virtchnl_set_dflt_ops(vf);
+
+	/* set default number of MSI-X */
+	vf->num_msix = vfs->num_msix_per;
+	vf->num_vf_qs = vfs->num_qps_per;
 
 	/* ctrl_vsi_idx will be set to a valid value only when iAVF
 	 * creates its first fdir rule.
