@@ -14,6 +14,7 @@
 #include <linux/dmi.h>
 #include <linux/ctype.h>
 #include <linux/firmware.h>
+#include <linux/panic_notifier.h>
 #include "qmi.h"
 #include "htc.h"
 #include "wmi.h"
@@ -689,6 +690,7 @@ struct mlo_timestamp {
 struct ath12k_pdev {
 	struct ath12k *ar;
 	u32 pdev_id;
+	u32 hw_link_id;
 	struct ath12k_pdev_cap cap;
 	u8 mac_addr[ETH_ALEN];
 	struct mlo_timestamp timestamp;
@@ -923,6 +925,8 @@ struct ath12k_base {
 	} acpi;
 
 #endif /* CONFIG_ACPI */
+
+	struct notifier_block panic_nb;
 
 	/* must be last */
 	u8 drv_priv[] __aligned(sizeof(void *));
