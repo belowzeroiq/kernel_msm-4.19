@@ -39,6 +39,7 @@
 
 #include <net/tcp.h>
 #include <net/mptcp.h>
+#include <net/proto_memory.h>
 
 #include <linux/compiler.h>
 #include <linux/gfp.h>
@@ -231,7 +232,7 @@ void tcp_select_initial_window(const struct sock *sk, int __space, __u32 mss,
 	if (READ_ONCE(sock_net(sk)->ipv4.sysctl_tcp_workaround_signed_windows))
 		(*rcv_wnd) = min(space, MAX_TCP_WINDOW);
 	else
-		(*rcv_wnd) = min_t(u32, space, U16_MAX);
+		(*rcv_wnd) = space;
 
 	if (init_rcv_wnd)
 		*rcv_wnd = min(*rcv_wnd, init_rcv_wnd * mss);
@@ -1300,7 +1301,7 @@ static int __tcp_transmit_skb(struct sock *sk, struct sk_buff *skb,
 	tp = tcp_sk(sk);
 	prior_wstamp = tp->tcp_wstamp_ns;
 	tp->tcp_wstamp_ns = max(tp->tcp_wstamp_ns, tp->tcp_clock_cache);
-	skb_set_delivery_time(skb, tp->tcp_wstamp_ns, true);
+	skb_set_delivery_time(skb, tp->tcp_wstamp_ns, SKB_CLOCK_MONOTONIC);
 	if (clone_it) {
 		oskb = skb;
 
@@ -1654,7 +1655,7 @@ int tcp_fragment(struct sock *sk, enum tcp_queue tcp_queue,
 
 	skb_split(skb, buff, len);
 
-	skb_set_delivery_time(buff, skb->tstamp, true);
+	skb_set_delivery_time(buff, skb->tstamp, SKB_CLOCK_MONOTONIC);
 	tcp_fragment_tstamp(skb, buff);
 
 	old_factor = tcp_skb_pcount(skb);
@@ -2403,6 +2404,21 @@ commit:
 	return 0;
 }
 
+/* tcp_mtu_probe() and tcp_grow_skb() can both eat an skb (src) if
+ * all its payload was moved to another one (dst).
+ * Make sure to transfer tcp_flags, eor, and tstamp.
+ */
+static void tcp_eat_one_skb(struct sock *sk,
+			    struct sk_buff *dst,
+			    struct sk_buff *src)
+{
+	TCP_SKB_CB(dst)->tcp_flags |= TCP_SKB_CB(src)->tcp_flags;
+	TCP_SKB_CB(dst)->eor = TCP_SKB_CB(src)->eor;
+	tcp_skb_collapse_tstamp(dst, src);
+	tcp_unlink_write_queue(src, sk);
+	tcp_wmem_free_skb(sk, src);
+}
+
 /* Create a new MTU probe if we are ready.
  * MTU probe is regularly attempting to increase the path MTU by
  * deliberately sending larger packets.  This discovers routing
@@ -2508,16 +2524,7 @@ static int tcp_mtu_probe(struct sock *sk)
 		copy = min_t(int, skb->len, probe_size - len);
 
 		if (skb->len <= copy) {
-			/* We've eaten all the data from this skb.
-			 * Throw it away. */
-			TCP_SKB_CB(nskb)->tcp_flags |= TCP_SKB_CB(skb)->tcp_flags;
-			/* If this is the last SKB we copy and eor is set
-			 * we need to propagate it to the new skb.
-			 */
-			TCP_SKB_CB(nskb)->eor = TCP_SKB_CB(skb)->eor;
-			tcp_skb_collapse_tstamp(nskb, skb);
-			tcp_unlink_write_queue(skb, sk);
-			tcp_wmem_free_skb(sk, skb);
+			tcp_eat_one_skb(sk, nskb, skb);
 		} else {
 			TCP_SKB_CB(nskb)->tcp_flags |= TCP_SKB_CB(skb)->tcp_flags &
 						   ~(TCPHDR_FIN|TCPHDR_PSH);
@@ -2705,11 +2712,10 @@ static void tcp_grow_skb(struct sock *sk, struct sk_buff *skb, int amount)
 	TCP_SKB_CB(next_skb)->seq += nlen;
 
 	if (!next_skb->len) {
+		/* In case FIN is set, we need to update end_seq */
 		TCP_SKB_CB(skb)->end_seq = TCP_SKB_CB(next_skb)->end_seq;
-		TCP_SKB_CB(skb)->eor = TCP_SKB_CB(next_skb)->eor;
-		TCP_SKB_CB(skb)->tcp_flags |= TCP_SKB_CB(next_skb)->tcp_flags;
-		tcp_unlink_write_queue(next_skb, sk);
-		tcp_wmem_free_skb(sk, next_skb);
+
+		tcp_eat_one_skb(sk, skb, next_skb);
 	}
 }
 
@@ -2758,7 +2764,7 @@ static bool tcp_write_xmit(struct sock *sk, unsigned int mss_now, int nonagle,
 		if (unlikely(tp->repair) && tp->repair_queue == TCP_SEND_QUEUE) {
 			/* "skb_mstamp_ns" is used as a start point for the retransmit timer */
 			tp->tcp_wstamp_ns = tp->tcp_clock_cache;
-			skb_set_delivery_time(skb, tp->tcp_wstamp_ns, true);
+			skb_set_delivery_time(skb, tp->tcp_wstamp_ns, SKB_CLOCK_MONOTONIC);
 			list_move_tail(&skb->tcp_tsorted_anchor, &tp->tsorted_sent_queue);
 			tcp_init_tso_segs(skb, mss_now);
 			goto repair; /* Skip network transmission */
@@ -3595,7 +3601,9 @@ void tcp_send_fin(struct sock *sk)
 			return;
 		}
 	} else {
-		skb = alloc_skb_fclone(MAX_TCP_HEADER, sk->sk_allocation);
+		skb = alloc_skb_fclone(MAX_TCP_HEADER,
+				       sk_gfp_mask(sk, GFP_ATOMIC |
+						       __GFP_NOWARN));
 		if (unlikely(!skb))
 			return;
 
@@ -3615,7 +3623,8 @@ void tcp_send_fin(struct sock *sk)
  * was unread data in the receive queue.  This behavior is recommended
  * by RFC 2525, section 2.17.  -DaveM
  */
-void tcp_send_active_reset(struct sock *sk, gfp_t priority)
+void tcp_send_active_reset(struct sock *sk, gfp_t priority,
+			   enum sk_rst_reason reason)
 {
 	struct sk_buff *skb;
 
@@ -3640,7 +3649,7 @@ void tcp_send_active_reset(struct sock *sk, gfp_t priority)
 	/* skb of trace_tcp_send_reset() keeps the skb that caused RST,
 	 * skb here is different to the troublesome skb, so use NULL
 	 */
-	trace_tcp_send_reset(sk, NULL);
+	trace_tcp_send_reset(sk, NULL, SK_RST_REASON_NOT_SPECIFIED);
 }
 
 /* Send a crossed SYN-ACK during socket establishment.
@@ -3743,11 +3752,11 @@ struct sk_buff *tcp_make_synack(const struct sock *sk, struct dst_entry *dst,
 #ifdef CONFIG_SYN_COOKIES
 	if (unlikely(synack_type == TCP_SYNACK_COOKIE && ireq->tstamp_ok))
 		skb_set_delivery_time(skb, cookie_init_timestamp(req, now),
-				      true);
+				      SKB_CLOCK_MONOTONIC);
 	else
 #endif
 	{
-		skb_set_delivery_time(skb, now, true);
+		skb_set_delivery_time(skb, now, SKB_CLOCK_MONOTONIC);
 		if (!tcp_rsk(req)->snt_synack) /* Timestamp first SYNACK */
 			tcp_rsk(req)->snt_synack = tcp_skb_timestamp_us(skb);
 	}
@@ -3834,7 +3843,7 @@ struct sk_buff *tcp_make_synack(const struct sock *sk, struct dst_entry *dst,
 	bpf_skops_write_hdr_opt((struct sock *)sk, skb, req, syn_skb,
 				synack_type, &opts);
 
-	skb_set_delivery_time(skb, now, true);
+	skb_set_delivery_time(skb, now, SKB_CLOCK_MONOTONIC);
 	tcp_add_tx_delay(skb, tp);
 
 	return skb;
@@ -4018,7 +4027,7 @@ static int tcp_send_syn_data(struct sock *sk, struct sk_buff *syn)
 
 	err = tcp_transmit_skb(sk, syn_data, 1, sk->sk_allocation);
 
-	skb_set_delivery_time(syn, syn_data->skb_mstamp_ns, true);
+	skb_set_delivery_time(syn, syn_data->skb_mstamp_ns, SKB_CLOCK_MONOTONIC);
 
 	/* Now full SYN+DATA was cloned and sent (or not),
 	 * remove the SYN from the original skb (syn_data)
@@ -4154,16 +4163,9 @@ EXPORT_SYMBOL(tcp_connect);
 
 u32 tcp_delack_max(const struct sock *sk)
 {
-	const struct dst_entry *dst = __sk_dst_get(sk);
-	u32 delack_max = inet_csk(sk)->icsk_delack_max;
+	u32 delack_from_rto_min = max(tcp_rto_min(sk), 2) - 1;
 
-	if (dst && dst_metric_locked(dst, RTAX_RTO_MIN)) {
-		u32 rto_min = dst_metric_rtt(dst, RTAX_RTO_MIN);
-		u32 delack_from_rto_min = max_t(int, 1, rto_min - 1);
-
-		delack_max = min_t(u32, delack_max, delack_from_rto_min);
-	}
-	return delack_max;
+	return min(inet_csk(sk)->icsk_delack_max, delack_from_rto_min);
 }
 
 /* Send out a delayed ack, the caller does the policy checking

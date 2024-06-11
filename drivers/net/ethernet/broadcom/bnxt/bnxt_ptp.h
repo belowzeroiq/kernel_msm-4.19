@@ -24,7 +24,7 @@
 
 #define BNXT_PTP_DFLT_TX_TMO	1000 /* ms */
 #define BNXT_PTP_QTS_TIMEOUT	1000
-#define BNXT_PTP_QTS_MAX_TMO_US	65535
+#define BNXT_PTP_QTS_MAX_TMO_US	65535U
 #define BNXT_PTP_QTS_TX_ENABLES	(PORT_TS_QUERY_REQ_ENABLES_PTP_SEQ_ID |	\
 				 PORT_TS_QUERY_REQ_ENABLES_TS_REQ_TIMEOUT | \
 				 PORT_TS_QUERY_REQ_ENABLES_PTP_HDR_OFFSET)
@@ -79,6 +79,12 @@ struct bnxt_pps {
 	struct pps_pin pins[BNXT_MAX_TSIO_PINS];
 };
 
+struct bnxt_ptp_stats {
+	u64		ts_pkts;
+	u64		ts_lost;
+	atomic64_t	ts_err;
+};
+
 struct bnxt_ptp_cfg {
 	struct ptp_clock_info	ptp_info;
 	struct ptp_clock	*ptp_clock;
@@ -125,6 +131,8 @@ struct bnxt_ptp_cfg {
 	u32			refclk_mapped_regs[2];
 	u32			txts_tmo;
 	unsigned long		abs_txts_tmo;
+
+	struct bnxt_ptp_stats	stats;
 };
 
 #if BITS_PER_LONG == 32

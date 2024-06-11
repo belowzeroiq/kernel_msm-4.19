@@ -13431,7 +13431,7 @@ static struct bpf_test tests[] = {
 		.stack_depth = 8,
 		.nr_testruns = NR_PATTERN_RUNS,
 	},
-	/* 64-bit atomic magnitudes */
+	/* 32-bit atomic magnitudes */
 	{
 		"ATOMIC_W_ADD: all operand magnitudes",
 		{ },
@@ -15706,4 +15706,5 @@ static void __exit test_bpf_exit(void)
 module_init(test_bpf_init);
 module_exit(test_bpf_exit);
 
+MODULE_DESCRIPTION("Testsuite for BPF interpreter and BPF JIT compiler");
 MODULE_LICENSE("GPL");

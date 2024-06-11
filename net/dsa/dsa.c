@@ -1507,12 +1507,9 @@ static int dsa_switch_probe(struct dsa_switch *ds)
 
 	if (ds->phylink_mac_ops) {
 		if (ds->ops->phylink_mac_select_pcs ||
-		    ds->ops->phylink_mac_prepare ||
 		    ds->ops->phylink_mac_config ||
-		    ds->ops->phylink_mac_finish ||
 		    ds->ops->phylink_mac_link_down ||
-		    ds->ops->phylink_mac_link_up ||
-		    ds->ops->adjust_link)
+		    ds->ops->phylink_mac_link_up)
 			return -EINVAL;
 	}
 

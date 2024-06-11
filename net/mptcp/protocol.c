@@ -20,6 +20,7 @@
 #include <net/transp_v6.h>
 #endif
 #include <net/mptcp.h>
+#include <net/hotdata.h>
 #include <net/xfrm.h>
 #include <asm/ioctls.h>
 #include "protocol.h"
@@ -1272,7 +1273,7 @@ static int mptcp_sendmsg_frag(struct sock *sk, struct sock *ssk,
 
 		i = skb_shinfo(skb)->nr_frags;
 		can_coalesce = skb_can_coalesce(skb, i, dfrag->page, offset);
-		if (!can_coalesce && i >= READ_ONCE(sysctl_max_skb_frags)) {
+		if (!can_coalesce && i >= READ_ONCE(net_hotdata.sysctl_max_skb_frags)) {
 			tcp_mark_push(tcp_sk(ssk), skb);
 			goto alloc_skb;
 		}
@@ -2039,13 +2040,13 @@ static void mptcp_rcv_space_adjust(struct mptcp_sock *msk, int copied)
 		do_div(grow, msk->rcvq_space.space);
 		rcvwin += (grow << 1);
 
-		rcvbuf = min_t(u64, __tcp_space_from_win(scaling_ratio, rcvwin),
+		rcvbuf = min_t(u64, mptcp_space_from_win(sk, rcvwin),
 			       READ_ONCE(sock_net(sk)->ipv4.sysctl_tcp_rmem[2]));
 
 		if (rcvbuf > sk->sk_rcvbuf) {
 			u32 window_clamp;
 
-			window_clamp = __tcp_win_from_space(scaling_ratio, rcvbuf);
+			window_clamp = mptcp_win_from_space(sk, rcvbuf);
 			WRITE_ONCE(sk->sk_rcvbuf, rcvbuf);
 
 			/* Make subflows follow along.  If we do not do this, we
@@ -2201,7 +2202,7 @@ static int mptcp_recvmsg(struct sock *sk, struct msghdr *msg, size_t len,
 		if (skb_queue_empty(&msk->receive_queue) && __mptcp_move_skbs(msk))
 			continue;
 
-		/* only the master socket status is relevant here. The exit
+		/* only the MPTCP socket status is relevant here. The exit
 		 * conditions mirror closely tcp_recvmsg()
 		 */
 		if (copied >= target)
@@ -2569,7 +2570,7 @@ static void mptcp_check_fastclose(struct mptcp_sock *msk)
 
 		slow = lock_sock_fast(tcp_sk);
 		if (tcp_sk->sk_state != TCP_CLOSE) {
-			tcp_send_active_reset(tcp_sk, GFP_ATOMIC);
+			mptcp_send_active_reset_reason(tcp_sk);
 			tcp_set_state(tcp_sk, TCP_CLOSE);
 		}
 		unlock_sock_fast(tcp_sk, slow);
@@ -2813,7 +2814,8 @@ static void mptcp_ca_reset(struct sock *sk)
 	struct inet_connection_sock *icsk = inet_csk(sk);
 
 	tcp_assign_congestion_control(sk);
-	strcpy(mptcp_sk(sk)->ca_name, icsk->icsk_ca_ops->name);
+	strscpy(mptcp_sk(sk)->ca_name, icsk->icsk_ca_ops->name,
+		sizeof(mptcp_sk(sk)->ca_name));
 
 	/* no need to keep a reference to the ops, the name will suffice */
 	tcp_cleanup_congestion_control(sk);
@@ -2914,9 +2916,14 @@ void mptcp_set_state(struct sock *sk, int state)
 		if (oldstate != TCP_ESTABLISHED)
 			MPTCP_INC_STATS(sock_net(sk), MPTCP_MIB_CURRESTAB);
 		break;
-
+	case TCP_CLOSE_WAIT:
+		/* Unlike TCP, MPTCP sk would not have the TCP_SYN_RECV state:
+		 * MPTCP "accepted" sockets will be created later on. So no
+		 * transition from TCP_SYN_RECV to TCP_CLOSE_WAIT.
+		 */
+		break;
 	default:
-		if (oldstate == TCP_ESTABLISHED)
+		if (oldstate == TCP_ESTABLISHED || oldstate == TCP_CLOSE_WAIT)
 			MPTCP_DEC_STATS(sock_net(sk), MPTCP_MIB_CURRESTAB);
 	}
 
@@ -3519,7 +3526,7 @@ void mptcp_subflow_process_delegated(struct sock *ssk, long status)
 static int mptcp_hash(struct sock *sk)
 {
 	/* should never be called,
-	 * we hash the TCP subflows not the master socket
+	 * we hash the TCP subflows not the MPTCP socket
 	 */
 	WARN_ON_ONCE(1);
 	return 0;
@@ -3730,6 +3737,9 @@ static int mptcp_connect(struct sock *sk, struct sockaddr *uaddr, int addr_len)
 		MPTCP_INC_STATS(sock_net(ssk), MPTCP_MIB_TOKENFALLBACKINIT);
 		mptcp_subflow_early_fallback(msk, subflow);
 	}
+
+	WRITE_ONCE(msk->write_seq, subflow->idsn);
+	WRITE_ONCE(msk->snd_nxt, subflow->idsn);
 	if (likely(!__mptcp_check_fallback(msk)))
 		MPTCP_INC_STATS(sock_net(sk), MPTCP_MIB_MPCAPABLEACTIVE);
 
@@ -3877,11 +3887,10 @@ unlock:
 }
 
 static int mptcp_stream_accept(struct socket *sock, struct socket *newsock,
-			       int flags, bool kern)
+			       struct proto_accept_arg *arg)
 {
 	struct mptcp_sock *msk = mptcp_sk(sock->sk);
 	struct sock *ssk, *newsk;
-	int err;
 
 	pr_debug("msk=%p", msk);
 
@@ -3893,9 +3902,9 @@ static int mptcp_stream_accept(struct socket *sock, struct socket *newsock,
 		return -EINVAL;
 
 	pr_debug("ssk=%p, listener=%p", ssk, mptcp_subflow_ctx(ssk));
-	newsk = inet_csk_accept(ssk, flags, &err, kern);
+	newsk = inet_csk_accept(ssk, arg);
 	if (!newsk)
-		return err;
+		return arg->err;
 
 	pr_debug("newsk=%p, subflow is mptcp=%d", newsk, sk_is_mptcp(newsk));
 	if (sk_is_mptcp(newsk)) {
@@ -3916,7 +3925,7 @@ static int mptcp_stream_accept(struct socket *sock, struct socket *newsock,
 		newsk = new_mptcp_sock;
 		MPTCP_INC_STATS(sock_net(ssk), MPTCP_MIB_MPCAPABLEPASSIVEACK);
 
-		newsk->sk_kern_sock = kern;
+		newsk->sk_kern_sock = arg->kern;
 		lock_sock(newsk);
 		__inet_accept(sock, newsock, newsk);
 
@@ -3945,7 +3954,7 @@ static int mptcp_stream_accept(struct socket *sock, struct socket *newsock,
 		}
 	} else {
 tcpfallback:
-		newsk->sk_kern_sock = kern;
+		newsk->sk_kern_sock = arg->kern;
 		lock_sock(newsk);
 		__inet_accept(sock, newsock, newsk);
 		/* we are being invoked after accepting a non-mp-capable
@@ -4165,7 +4174,7 @@ int __init mptcp_proto_v6_init(void)
 	int err;
 
 	mptcp_v6_prot = mptcp_prot;
-	strcpy(mptcp_v6_prot.name, "MPTCPv6");
+	strscpy(mptcp_v6_prot.name, "MPTCPv6", sizeof(mptcp_v6_prot.name));
 	mptcp_v6_prot.slab = NULL;
 	mptcp_v6_prot.obj_size = sizeof(struct mptcp6_sock);
 	mptcp_v6_prot.ipv6_pinfo_offset = offsetof(struct mptcp6_sock, np);

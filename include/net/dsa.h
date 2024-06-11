@@ -24,9 +24,6 @@
 
 struct dsa_8021q_context;
 struct tc_action;
-struct phy_device;
-struct fixed_phy_status;
-struct phylink_link_state;
 
 #define DSA_TAG_PROTO_NONE_VALUE		0
 #define DSA_TAG_PROTO_BRCM_VALUE		1
@@ -436,6 +433,11 @@ struct dsa_switch {
 	 */
 	u32			fdb_isolation:1;
 
+	/* Drivers that have global DSCP mapping settings must set this to
+	 * true to automatically apply the settings to all ports.
+	 */
+	u32			dscp_prio_mapping_is_global:1;
+
 	/* Listener for switch fabric events */
 	struct notifier_block	nb;
 
@@ -587,6 +589,10 @@ static inline bool dsa_is_user_port(struct dsa_switch *ds, int p)
 
 #define dsa_switch_for_each_user_port(_dp, _ds) \
 	dsa_switch_for_each_port((_dp), (_ds)) \
+		if (dsa_port_is_user((_dp)))
+
+#define dsa_switch_for_each_user_port_continue_reverse(_dp, _ds) \
+	dsa_switch_for_each_port_continue_reverse((_dp), (_ds)) \
 		if (dsa_port_is_user((_dp)))
 
 #define dsa_switch_for_each_cpu_port(_dp, _ds) \
@@ -869,14 +875,6 @@ struct dsa_switch_ops {
 			     int regnum, u16 val);
 
 	/*
-	 * Link state adjustment (called from libphy)
-	 */
-	void	(*adjust_link)(struct dsa_switch *ds, int port,
-				struct phy_device *phydev);
-	void	(*fixed_link_update)(struct dsa_switch *ds, int port,
-				struct fixed_phy_status *st);
-
-	/*
 	 * PHYLINK integration
 	 */
 	void	(*phylink_get_caps)(struct dsa_switch *ds, int port,
@@ -884,15 +882,9 @@ struct dsa_switch_ops {
 	struct phylink_pcs *(*phylink_mac_select_pcs)(struct dsa_switch *ds,
 						      int port,
 						      phy_interface_t iface);
-	int	(*phylink_mac_prepare)(struct dsa_switch *ds, int port,
-				       unsigned int mode,
-				       phy_interface_t interface);
 	void	(*phylink_mac_config)(struct dsa_switch *ds, int port,
 				      unsigned int mode,
 				      const struct phylink_link_state *state);
-	int	(*phylink_mac_finish)(struct dsa_switch *ds, int port,
-				      unsigned int mode,
-				      phy_interface_t interface);
 	void	(*phylink_mac_link_down)(struct dsa_switch *ds, int port,
 					 unsigned int mode,
 					 phy_interface_t interface);
@@ -966,6 +958,10 @@ struct dsa_switch_ops {
 				      u8 prio);
 	int	(*port_del_dscp_prio)(struct dsa_switch *ds, int port, u8 dscp,
 				      u8 prio);
+	int	(*port_set_apptrust)(struct dsa_switch *ds, int port,
+				     const u8 *sel, int nsel);
+	int	(*port_get_apptrust)(struct dsa_switch *ds, int port, u8 *sel,
+				     int *nsel);
 
 	/*
 	 * Suspend and resume

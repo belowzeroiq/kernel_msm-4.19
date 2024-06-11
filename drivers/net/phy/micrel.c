@@ -167,6 +167,9 @@
 #define PTP_CMD_CTL_PTP_LTC_STEP_SEC_		BIT(5)
 #define PTP_CMD_CTL_PTP_LTC_STEP_NSEC_		BIT(6)
 
+#define PTP_COMMON_INT_ENA			0x0204
+#define PTP_COMMON_INT_ENA_GPIO_CAP_EN		BIT(2)
+
 #define PTP_CLOCK_SET_SEC_HI			0x0205
 #define PTP_CLOCK_SET_SEC_MID			0x0206
 #define PTP_CLOCK_SET_SEC_LO			0x0207
@@ -178,6 +181,27 @@
 #define PTP_CLOCK_READ_SEC_LO			0x022B
 #define PTP_CLOCK_READ_NS_HI			0x022C
 #define PTP_CLOCK_READ_NS_LO			0x022D
+
+#define PTP_GPIO_SEL				0x0230
+#define PTP_GPIO_SEL_GPIO_SEL(pin)		((pin) << 8)
+#define PTP_GPIO_CAP_MAP_LO			0x0232
+
+#define PTP_GPIO_CAP_EN				0x0233
+#define PTP_GPIO_CAP_EN_GPIO_RE_CAPTURE_ENABLE(gpio)	BIT(gpio)
+#define PTP_GPIO_CAP_EN_GPIO_FE_CAPTURE_ENABLE(gpio)	(BIT(gpio) << 8)
+
+#define PTP_GPIO_RE_LTC_SEC_HI_CAP		0x0235
+#define PTP_GPIO_RE_LTC_SEC_LO_CAP		0x0236
+#define PTP_GPIO_RE_LTC_NS_HI_CAP		0x0237
+#define PTP_GPIO_RE_LTC_NS_LO_CAP		0x0238
+#define PTP_GPIO_FE_LTC_SEC_HI_CAP		0x0239
+#define PTP_GPIO_FE_LTC_SEC_LO_CAP		0x023A
+#define PTP_GPIO_FE_LTC_NS_HI_CAP		0x023B
+#define PTP_GPIO_FE_LTC_NS_LO_CAP		0x023C
+
+#define PTP_GPIO_CAP_STS			0x023D
+#define PTP_GPIO_CAP_STS_PTP_GPIO_RE_STS(gpio)	BIT(gpio)
+#define PTP_GPIO_CAP_STS_PTP_GPIO_FE_STS(gpio)	(BIT(gpio) << 8)
 
 #define PTP_OPERATING_MODE			0x0241
 #define PTP_OPERATING_MODE_STANDALONE_		BIT(0)
@@ -274,6 +298,7 @@
 
 #define LAN8814_PTP_GPIO_NUM			24
 #define LAN8814_PTP_PEROUT_NUM			2
+#define LAN8814_PTP_EXTTS_NUM			3
 
 #define LAN8814_BUFFER_TIME			2
 
@@ -840,6 +865,17 @@ static int ksz8081_read_status(struct phy_device *phydev)
 static int ksz8061_config_init(struct phy_device *phydev)
 {
 	int ret;
+
+	/* Chip can be powered down by the bootstrap code. */
+	ret = phy_read(phydev, MII_BMCR);
+	if (ret < 0)
+		return ret;
+	if (ret & BMCR_PDOWN) {
+		ret = phy_write(phydev, MII_BMCR, ret & ~BMCR_PDOWN);
+		if (ret < 0)
+			return ret;
+		usleep_range(1000, 2000);
+	}
 
 	ret = phy_write_mmd(phydev, MDIO_MMD_PMAPMD, MDIO_DEVID1, 0xB61A);
 	if (ret)
@@ -1914,7 +1950,7 @@ static const struct ksz9477_errata_write ksz9477_errata_writes[] = {
 	{0x1c, 0x20, 0xeeee},
 };
 
-static int ksz9477_config_init(struct phy_device *phydev)
+static int ksz9477_phy_errata(struct phy_device *phydev)
 {
 	int err;
 	int i;
@@ -1942,15 +1978,29 @@ static int ksz9477_config_init(struct phy_device *phydev)
 			return err;
 	}
 
+	err = genphy_restart_aneg(phydev);
+	if (err)
+		return err;
+
+	return err;
+}
+
+static int ksz9477_config_init(struct phy_device *phydev)
+{
+	int err;
+
+	/* Only KSZ9897 family of switches needs this fix. */
+	if ((phydev->phy_id & 0xf) == 1) {
+		err = ksz9477_phy_errata(phydev);
+		if (err)
+			return err;
+	}
+
 	/* According to KSZ9477 Errata DS80000754C (Module 4) all EEE modes
 	 * in this switch shall be regarded as broken.
 	 */
 	if (phydev->dev_flags & MICREL_NO_EEE)
 		phydev->eee_broken_modes = -1;
-
-	err = genphy_restart_aneg(phydev);
-	if (err)
-		return err;
 
 	return kszphy_config_init(phydev);
 }
@@ -2047,6 +2097,71 @@ static int kszphy_resume(struct phy_device *phydev)
 	usleep_range(1000, 2000);
 
 	ret = kszphy_config_reset(phydev);
+	if (ret)
+		return ret;
+
+	/* Enable PHY Interrupts */
+	if (phy_interrupt_is_valid(phydev)) {
+		phydev->interrupts = PHY_INTERRUPT_ENABLED;
+		if (phydev->drv->config_intr)
+			phydev->drv->config_intr(phydev);
+	}
+
+	return 0;
+}
+
+static int ksz9477_resume(struct phy_device *phydev)
+{
+	int ret;
+
+	/* No need to initialize registers if not powered down. */
+	ret = phy_read(phydev, MII_BMCR);
+	if (ret < 0)
+		return ret;
+	if (!(ret & BMCR_PDOWN))
+		return 0;
+
+	genphy_resume(phydev);
+
+	/* After switching from power-down to normal mode, an internal global
+	 * reset is automatically generated. Wait a minimum of 1 ms before
+	 * read/write access to the PHY registers.
+	 */
+	usleep_range(1000, 2000);
+
+	/* Only KSZ9897 family of switches needs this fix. */
+	if ((phydev->phy_id & 0xf) == 1) {
+		ret = ksz9477_phy_errata(phydev);
+		if (ret)
+			return ret;
+	}
+
+	/* Enable PHY Interrupts */
+	if (phy_interrupt_is_valid(phydev)) {
+		phydev->interrupts = PHY_INTERRUPT_ENABLED;
+		if (phydev->drv->config_intr)
+			phydev->drv->config_intr(phydev);
+	}
+
+	return 0;
+}
+
+static int ksz8061_resume(struct phy_device *phydev)
+{
+	int ret;
+
+	/* This function can be called twice when the Ethernet device is on. */
+	ret = phy_read(phydev, MII_BMCR);
+	if (ret < 0)
+		return ret;
+	if (!(ret & BMCR_PDOWN))
+		return 0;
+
+	genphy_resume(phydev);
+	usleep_range(1000, 2000);
+
+	/* Re-program the value after chip is reset. */
+	ret = phy_write_mmd(phydev, MDIO_MMD_PMAPMD, MDIO_DEVID1, 0xB61A);
 	if (ret)
 		return ret;
 
@@ -3124,12 +3239,102 @@ static int lan8814_ptp_perout(struct ptp_clock_info *ptpci,
 	return 0;
 }
 
+static void lan8814_ptp_extts_on(struct phy_device *phydev, int pin, u32 flags)
+{
+	u16 tmp;
+
+	/* Set as gpio input */
+	tmp = lanphy_read_page_reg(phydev, 4, LAN8814_GPIO_DIR_ADDR(pin));
+	tmp &= ~LAN8814_GPIO_DIR_BIT(pin);
+	lanphy_write_page_reg(phydev, 4, LAN8814_GPIO_DIR_ADDR(pin), tmp);
+
+	/* Map the pin to ltc pin 0 of the capture map registers */
+	tmp = lanphy_read_page_reg(phydev, 4, PTP_GPIO_CAP_MAP_LO);
+	tmp |= pin;
+	lanphy_write_page_reg(phydev, 4, PTP_GPIO_CAP_MAP_LO, tmp);
+
+	/* Enable capture on the edges of the ltc pin */
+	tmp = lanphy_read_page_reg(phydev, 4, PTP_GPIO_CAP_EN);
+	if (flags & PTP_RISING_EDGE)
+		tmp |= PTP_GPIO_CAP_EN_GPIO_RE_CAPTURE_ENABLE(0);
+	if (flags & PTP_FALLING_EDGE)
+		tmp |= PTP_GPIO_CAP_EN_GPIO_FE_CAPTURE_ENABLE(0);
+	lanphy_write_page_reg(phydev, 4, PTP_GPIO_CAP_EN, tmp);
+
+	/* Enable interrupt top interrupt */
+	tmp = lanphy_read_page_reg(phydev, 4, PTP_COMMON_INT_ENA);
+	tmp |= PTP_COMMON_INT_ENA_GPIO_CAP_EN;
+	lanphy_write_page_reg(phydev, 4, PTP_COMMON_INT_ENA, tmp);
+}
+
+static void lan8814_ptp_extts_off(struct phy_device *phydev, int pin)
+{
+	u16 tmp;
+
+	/* Set as gpio out */
+	tmp = lanphy_read_page_reg(phydev, 4, LAN8814_GPIO_DIR_ADDR(pin));
+	tmp |= LAN8814_GPIO_DIR_BIT(pin);
+	lanphy_write_page_reg(phydev, 4, LAN8814_GPIO_DIR_ADDR(pin), tmp);
+
+	/* Enable alternate, 0:for alternate function, 1:gpio */
+	tmp = lanphy_read_page_reg(phydev, 4, LAN8814_GPIO_EN_ADDR(pin));
+	tmp &= ~LAN8814_GPIO_EN_BIT(pin);
+	lanphy_write_page_reg(phydev, 4, LAN8814_GPIO_EN_ADDR(pin), tmp);
+
+	/* Clear the mapping of pin to registers 0 of the capture registers */
+	tmp = lanphy_read_page_reg(phydev, 4, PTP_GPIO_CAP_MAP_LO);
+	tmp &= ~GENMASK(3, 0);
+	lanphy_write_page_reg(phydev, 4, PTP_GPIO_CAP_MAP_LO, tmp);
+
+	/* Disable capture on both of the edges */
+	tmp = lanphy_read_page_reg(phydev, 4, PTP_GPIO_CAP_EN);
+	tmp &= ~PTP_GPIO_CAP_EN_GPIO_RE_CAPTURE_ENABLE(pin);
+	tmp &= ~PTP_GPIO_CAP_EN_GPIO_FE_CAPTURE_ENABLE(pin);
+	lanphy_write_page_reg(phydev, 4, PTP_GPIO_CAP_EN, tmp);
+
+	/* Disable interrupt top interrupt */
+	tmp = lanphy_read_page_reg(phydev, 4, PTP_COMMON_INT_ENA);
+	tmp &= ~PTP_COMMON_INT_ENA_GPIO_CAP_EN;
+	lanphy_write_page_reg(phydev, 4, PTP_COMMON_INT_ENA, tmp);
+}
+
+static int lan8814_ptp_extts(struct ptp_clock_info *ptpci,
+			     struct ptp_clock_request *rq, int on)
+{
+	struct lan8814_shared_priv *shared = container_of(ptpci, struct lan8814_shared_priv,
+							  ptp_clock_info);
+	struct phy_device *phydev = shared->phydev;
+	int pin;
+
+	if (rq->extts.flags & ~(PTP_ENABLE_FEATURE |
+				PTP_EXTTS_EDGES |
+				PTP_STRICT_FLAGS))
+		return -EOPNOTSUPP;
+
+	pin = ptp_find_pin(shared->ptp_clock, PTP_PF_EXTTS,
+			   rq->extts.index);
+	if (pin == -1 || pin != LAN8814_PTP_EXTTS_NUM)
+		return -EINVAL;
+
+	mutex_lock(&shared->shared_lock);
+	if (on)
+		lan8814_ptp_extts_on(phydev, pin, rq->extts.flags);
+	else
+		lan8814_ptp_extts_off(phydev, pin);
+
+	mutex_unlock(&shared->shared_lock);
+
+	return 0;
+}
+
 static int lan8814_ptpci_enable(struct ptp_clock_info *ptpci,
 				struct ptp_clock_request *rq, int on)
 {
 	switch (rq->type) {
 	case PTP_CLK_REQ_PEROUT:
 		return lan8814_ptp_perout(ptpci, rq, on);
+	case PTP_CLK_REQ_EXTTS:
+		return lan8814_ptp_extts(ptpci, rq, on);
 	default:
 		return -EINVAL;
 	}
@@ -3146,6 +3351,10 @@ static int lan8814_ptpci_verify(struct ptp_clock_info *ptp, unsigned int pin,
 		 * chan 1 (event B)
 		 */
 		if (pin >= LAN8814_PTP_PEROUT_NUM || pin != chan)
+			return -1;
+		break;
+	case PTP_PF_EXTTS:
+		if (pin != LAN8814_PTP_EXTTS_NUM)
 			return -1;
 		break;
 	default:
@@ -3320,6 +3529,64 @@ static void lan8814_handle_ptp_interrupt(struct phy_device *phydev, u16 status)
 	}
 }
 
+static int lan8814_gpio_process_cap(struct lan8814_shared_priv *shared)
+{
+	struct phy_device *phydev = shared->phydev;
+	struct ptp_clock_event ptp_event = {0};
+	unsigned long nsec;
+	s64 sec;
+	u16 tmp;
+
+	/* This is 0 because whatever was the input pin it was mapped it to
+	 * ltc gpio pin 0
+	 */
+	tmp = lanphy_read_page_reg(phydev, 4, PTP_GPIO_SEL);
+	tmp |= PTP_GPIO_SEL_GPIO_SEL(0);
+	lanphy_write_page_reg(phydev, 4, PTP_GPIO_SEL, tmp);
+
+	tmp = lanphy_read_page_reg(phydev, 4, PTP_GPIO_CAP_STS);
+	if (!(tmp & PTP_GPIO_CAP_STS_PTP_GPIO_RE_STS(0)) &&
+	    !(tmp & PTP_GPIO_CAP_STS_PTP_GPIO_FE_STS(0)))
+		return -1;
+
+	if (tmp & BIT(0)) {
+		sec = lanphy_read_page_reg(phydev, 4, PTP_GPIO_RE_LTC_SEC_HI_CAP);
+		sec <<= 16;
+		sec |= lanphy_read_page_reg(phydev, 4, PTP_GPIO_RE_LTC_SEC_LO_CAP);
+
+		nsec = lanphy_read_page_reg(phydev, 4, PTP_GPIO_RE_LTC_NS_HI_CAP) & 0x3fff;
+		nsec <<= 16;
+		nsec |= lanphy_read_page_reg(phydev, 4, PTP_GPIO_RE_LTC_NS_LO_CAP);
+	} else {
+		sec = lanphy_read_page_reg(phydev, 4, PTP_GPIO_FE_LTC_SEC_HI_CAP);
+		sec <<= 16;
+		sec |= lanphy_read_page_reg(phydev, 4, PTP_GPIO_FE_LTC_SEC_LO_CAP);
+
+		nsec = lanphy_read_page_reg(phydev, 4, PTP_GPIO_FE_LTC_NS_HI_CAP) & 0x3fff;
+		nsec <<= 16;
+		nsec |= lanphy_read_page_reg(phydev, 4, PTP_GPIO_RE_LTC_NS_LO_CAP);
+	}
+
+	ptp_event.index = 0;
+	ptp_event.timestamp = ktime_set(sec, nsec);
+	ptp_event.type = PTP_CLOCK_EXTTS;
+	ptp_clock_event(shared->ptp_clock, &ptp_event);
+
+	return 0;
+}
+
+static int lan8814_handle_gpio_interrupt(struct phy_device *phydev, u16 status)
+{
+	struct lan8814_shared_priv *shared = phydev->shared->priv;
+	int ret;
+
+	mutex_lock(&shared->shared_lock);
+	ret = lan8814_gpio_process_cap(shared);
+	mutex_unlock(&shared->shared_lock);
+
+	return ret;
+}
+
 static int lan8804_config_init(struct phy_device *phydev)
 {
 	int val;
@@ -3423,6 +3690,9 @@ static irqreturn_t lan8814_handle_interrupt(struct phy_device *phydev)
 		lan8814_handle_ptp_interrupt(phydev, irq_status);
 		ret = IRQ_HANDLED;
 	}
+
+	if (!lan8814_handle_gpio_interrupt(phydev, irq_status))
+		ret = IRQ_HANDLED;
 
 	return ret;
 }
@@ -3541,7 +3811,7 @@ static int lan8814_ptp_probe_once(struct phy_device *phydev)
 	snprintf(shared->ptp_clock_info.name, 30, "%s", phydev->drv->name);
 	shared->ptp_clock_info.max_adj = 31249999;
 	shared->ptp_clock_info.n_alarm = 0;
-	shared->ptp_clock_info.n_ext_ts = 0;
+	shared->ptp_clock_info.n_ext_ts = LAN8814_PTP_EXTTS_NUM;
 	shared->ptp_clock_info.n_pins = LAN8814_PTP_GPIO_NUM;
 	shared->ptp_clock_info.pps = 0;
 	shared->ptp_clock_info.pin_config = shared->pin_config;
@@ -3849,7 +4119,7 @@ static int lan8841_config_intr(struct phy_device *phydev)
 
 	if (phydev->interrupts == PHY_INTERRUPT_ENABLED) {
 		err = phy_read(phydev, LAN8814_INTS);
-		if (err)
+		if (err < 0)
 			return err;
 
 		/* Enable / disable interrupts. It is OK to enable PTP interrupt
@@ -3865,6 +4135,14 @@ static int lan8841_config_intr(struct phy_device *phydev)
 			return err;
 
 		err = phy_read(phydev, LAN8814_INTS);
+		if (err < 0)
+			return err;
+
+		/* Getting a positive value doesn't mean that is an error, it
+		 * just indicates what was the status. Therefore make sure to
+		 * clear the value and say that there is no error.
+		 */
+		err = 0;
 	}
 
 	return err;
@@ -5009,7 +5287,8 @@ static int lan8841_suspend(struct phy_device *phydev)
 	struct kszphy_priv *priv = phydev->priv;
 	struct kszphy_ptp_priv *ptp_priv = &priv->ptp_priv;
 
-	ptp_cancel_worker_sync(ptp_priv->ptp_clock);
+	if (ptp_priv->ptp_clock)
+		ptp_cancel_worker_sync(ptp_priv->ptp_clock);
 
 	return genphy_suspend(phydev);
 }
@@ -5146,10 +5425,11 @@ static struct phy_driver ksphy_driver[] = {
 	/* PHY_BASIC_FEATURES */
 	.probe		= kszphy_probe,
 	.config_init	= ksz8061_config_init,
+	.soft_reset	= genphy_soft_reset,
 	.config_intr	= kszphy_config_intr,
 	.handle_interrupt = kszphy_handle_interrupt,
 	.suspend	= kszphy_suspend,
-	.resume		= kszphy_resume,
+	.resume		= ksz8061_resume,
 }, {
 	.phy_id		= PHY_ID_KSZ9021,
 	.phy_id_mask	= 0x000ffffe,
@@ -5303,7 +5583,7 @@ static struct phy_driver ksphy_driver[] = {
 	.config_intr	= kszphy_config_intr,
 	.handle_interrupt = kszphy_handle_interrupt,
 	.suspend	= genphy_suspend,
-	.resume		= genphy_resume,
+	.resume		= ksz9477_resume,
 	.get_features	= ksz9477_get_features,
 } };
 
