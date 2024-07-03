@@ -424,6 +424,7 @@ u64 ieee80211_reset_erp_info(struct ieee80211_sub_if_data *sdata)
 	       BSS_CHANGED_ERP_SLOT;
 }
 
+/* context: requires softirqs disabled */
 void ieee80211_handle_queued_frames(struct ieee80211_local *local)
 {
 	struct sk_buff *skb;
@@ -1159,9 +1160,6 @@ int ieee80211_register_hw(struct ieee80211_hw *hw)
 			return -EINVAL;
 
 		if (WARN_ON(!ieee80211_hw_check(hw, AP_LINK_PS)))
-			return -EINVAL;
-
-		if (WARN_ON(ieee80211_hw_check(hw, DEAUTH_NEED_MGD_TX_PREP)))
 			return -EINVAL;
 	}
 
